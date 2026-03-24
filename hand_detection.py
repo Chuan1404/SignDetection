@@ -15,7 +15,7 @@ FONT_THICKNESS = 1
 HANDEDNESS_TEXT_COLOR = (88, 205, 54)
 
 
-class HandDetection():
+class HandDetection:
     def __init__(self):
         base_options = python.BaseOptions(model_asset_path='./pretrained/hand_landmarker.task')
 
@@ -23,19 +23,15 @@ class HandDetection():
         video_options = vision.HandLandmarkerOptions(
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO)
-        video_detector = vision.HandLandmarker.create_from_options(video_options)
+        self.video_detector = vision.HandLandmarker.create_from_options(video_options)
 
         # Image
         image_options = vision.HandLandmarkerOptions(
             base_options=base_options)
-        image_detector = vision.HandLandmarker.create_from_options(image_options)
-
-        self.video_detector = video_detector
-        self.image_detector = image_detector
+        self.image_detector = vision.HandLandmarker.create_from_options(image_options)
 
     def detect_image(self, frame):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-
         detection_result = self.image_detector.detect(mp_image)
 
         return detection_result
@@ -47,7 +43,8 @@ class HandDetection():
 
         return detection_result
 
-    def draw_landmarks_on_image(self, rgb_image, detection_result: vision.HandLandmarkerResult, predicted_label=None):
+    @staticmethod
+    def draw_landmarks_on_image(rgb_image, detection_result: vision.HandLandmarkerResult, predicted_label=None):
         hand_landmarks_list = detection_result.hand_landmarks
         handedness_list = detection_result.handedness
         annotated_image = np.copy(rgb_image)
@@ -77,3 +74,10 @@ class HandDetection():
                             FONT_SIZE, HANDEDNESS_TEXT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
 
         return annotated_image
+
+    def close(self):
+        # When done (e.g., on cleanup)
+        if self.video_detector:
+            self.video_detector.close()
+        if self.image_detector:
+            self.image_detector.close()

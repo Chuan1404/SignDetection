@@ -1,38 +1,34 @@
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 import torch
 from torch import nn
-import pickle
 
+from datasets_loader.asl_dataset import ASLDataset
 from model import SignModel
 
-X = np.load("X.npy")
-y = np.load("y.npy")
+features = np.load("features.npy")
+labels = np.load("labels.npy")
 
-le = LabelEncoder()
-y = le.fit_transform(y)
-pickle.dump(le, open("label_encoder.pkl", "wb"))
-y_unique = np.unique(y)
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+features_train, features_test, labels_train, labels_test = train_test_split(
+    features, labels, test_size=0.2, random_state=42
 )
-X_train = torch.tensor(X_train, dtype=torch.float32)
-X_test = torch.tensor(X_test, dtype=torch.float32)
+features_train = torch.tensor(features_train, dtype=torch.float32)
+features_test = torch.tensor(features_test, dtype=torch.float32)
 
-y_train = torch.tensor(y_train, dtype=torch.long)
-y_test = torch.tensor(y_test, dtype=torch.long)
+labels_train = torch.tensor(labels_train, dtype=torch.long)
+labels_test = torch.tensor(labels_test, dtype=torch.long)
 
-model = SignModel(num_classes=len(set(y_unique)))
+dataset = ASLDataset("datasets/ASL_Alphabet_Dataset/train")
+model = SignModel(num_classes=len(dataset.label_map))
+
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 for epoch in range(51):
     model.train()
 
-    outputs = model(X_train)
-    loss = criterion(outputs, y_train)
+    outputs = model(features_train)
+    loss = criterion(outputs, labels_train)
 
     optimizer.zero_grad()
     loss.backward()
@@ -44,12 +40,12 @@ for epoch in range(51):
 model.eval()
 
 with torch.no_grad():
-    outputs = model(X_test)
+    outputs = model(features_test)
     _, predicted = torch.max(outputs, 1)
 
 
-    correct = (predicted == y_test).sum().item()
-    total = y_test.size(0)
+    correct = (predicted == labels_test).sum().item()
+    total = labels_test.size(0)
 
     accuracy = correct / total
     print(f"Correct: {correct}/{total}")
@@ -57,5 +53,6 @@ with torch.no_grad():
 
 torch.save({
     "model_state": model.state_dict(),
-    "num_classes": len(y_unique)
+    "num_classes": len(dataset.label_map)
 }, "model.pth")
+#
