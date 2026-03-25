@@ -7,7 +7,7 @@ from datasets_loader.asl_dataset import ASLDataset
 from hand_detection import HandDetection
 
 # Create label dictionary
-data_path = 'datasets/ASL_Alphabet_Dataset/train'
+data_path = 'C:\\Users\\ADMIN\\OneDrive\\Desktop\\SignDetection\\datasets\\ASL_Alphabet_Dataset\\asl_alphabet_train'
 
 # Create transform
 transform = transforms.Compose([
@@ -16,7 +16,7 @@ transform = transforms.Compose([
 
 hand_detection = HandDetection()
 
-dataset = ASLDataset("datasets/ASL_Alphabet_Dataset/train")
+dataset = ASLDataset(data_path)
 # loader = DataLoader(dataset, batch_size=32, shuffle=True)
 features = []
 labels = []

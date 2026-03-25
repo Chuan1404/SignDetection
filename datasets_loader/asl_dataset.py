@@ -3,7 +3,7 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-# MAX_PER_CLASS = 300
+MAX_PER_CLASS = 200
 
 class ASLDataset(Dataset):
     def __init__(self, data_path, transform=None):
@@ -16,7 +16,7 @@ class ASLDataset(Dataset):
             self.label_map[idx] = label
             folder = os.path.join(data_path, label)
 
-            for file in os.listdir(folder):
+            for file in os.listdir(folder)[:MAX_PER_CLASS]:
                 self.data.append(os.path.join(folder, file))
                 self.labels.append(idx)
 

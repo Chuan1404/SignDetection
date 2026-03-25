@@ -1,3 +1,5 @@
+from turtle import width
+
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -10,11 +12,26 @@ mp_drawing = vision.drawing_utils
 mp_drawing_styles = vision.drawing_styles
 
 MARGIN = 10  # pixels
-FONT_SIZE = 1
+FONT_SIZE = 3000
 FONT_THICKNESS = 1
 HANDEDNESS_TEXT_COLOR = (88, 205, 54)
 
+FINGERS = {
+    "Thumb": [0, 1, 2, 3, 4],
+    "Index": [0, 5, 6, 7, 8],
+    "Middle": [0, 9, 10, 11, 12],
+    "Ring": [0, 13, 14, 15, 16],
+    "Pinky": [0, 17, 18, 19, 20]
+}
 
+# Assign colors (BGR) to each finger
+FINGER_COLORS = {
+    "Thumb": (0, 0, 255),   # Red
+    "Index": (0, 255, 0),   # Green
+    "Middle": (255, 0, 0),  # Blue
+    "Ring": (0, 255, 255),  # Yellow
+    "Pinky": (255, 0, 255)  # Magenta
+}
 class HandDetection:
     def __init__(self):
         base_options = python.BaseOptions(model_asset_path='./pretrained/hand_landmarker.task')
@@ -43,35 +60,77 @@ class HandDetection:
 
         return detection_result
 
-    @staticmethod
-    def draw_landmarks_on_image(rgb_image, detection_result: vision.HandLandmarkerResult, predicted_label=None):
+    
+
+   
+
+    def draw_landmarks_on_image(self, rgb_image, detection_result, predicted_label=None):
         hand_landmarks_list = detection_result.hand_landmarks
         handedness_list = detection_result.handedness
         annotated_image = np.copy(rgb_image)
+        height, width, _ = annotated_image.shape
+
+        # Scale parameters with image size
+        point_radius = max(2, int(min(width, height) * 0.01))
+        line_thickness = max(1, int(min(width, height) * 0.002))
+        font_scale = max(1.0, width / 600 * 1.5)
 
         for idx in range(len(hand_landmarks_list)):
             hand_landmarks = hand_landmarks_list[idx]
             handedness = handedness_list[idx]
 
-            mp_drawing.draw_landmarks(
-                annotated_image,
-                hand_landmarks,
-                None,
-                mp_drawing_styles.get_default_hand_landmarks_style(),
-                # mp_drawing_styles
-            )
+            # Convert normalized landmarks to pixel coordinates
+            landmark_points = [
+                (int(lm.x * width), int(lm.y * height)) for lm in hand_landmarks
+            ]
 
-            height, width, _ = annotated_image.shape
-            x_coordinates = [landmark.x for landmark in hand_landmarks]
-            y_coordinates = [landmark.y for landmark in hand_landmarks]
-            text_x = 50
-            text_y = 50
+            # Draw connections per finger with assigned colors
+            for finger_name, indices in FINGERS.items():
+                color = FINGER_COLORS[finger_name]
+                for i in range(len(indices)-1):
+                    start_idx = indices[i]
+                    end_idx = indices[i+1]
+                    cv2.line(
+                        annotated_image,
+                        landmark_points[start_idx],
+                        landmark_points[end_idx],
+                        color,
+                        line_thickness
+                    )
 
-            # Draw handedness (left or right hand) on the image.
+            # Draw all landmarks as small circles
+            for x, y in landmark_points:
+                cv2.circle(annotated_image, (x, y), point_radius, (0, 255, 0), -1)
+
+            # Draw handedness text
+            x_coordinates = [lm.x for lm in hand_landmarks]
+            y_coordinates = [lm.y for lm in hand_landmarks]
+            text_x = int(min(x_coordinates) * width)
+            text_y = int(min(y_coordinates) * height) - MARGIN
+            # cv2.putText(
+            #     annotated_image,
+            #     # f"{handedness[0].category_name}",
+            #     f"{handedness[0].category_name}",
+            #     (text_x, text_y),
+            #     cv2.FONT_HERSHEY_DUPLEX,
+            #     FONT_SIZE,
+            #     HANDEDNESS_TEXT_COLOR,
+            #     FONT_THICKNESS,
+            #     cv2.LINE_AA
+            # )
+
+            # Optional: predicted label
             if predicted_label is not None:
-                cv2.putText(annotated_image, f"Letter: {predicted_label}",
-                            (text_x, text_y), cv2.FONT_HERSHEY_DUPLEX,
-                            FONT_SIZE, HANDEDNESS_TEXT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
+                cv2.putText(
+                    annotated_image,
+                    f"Letter: {predicted_label}",
+                    (50, 50),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    3,
+                    (0, 0, 255),
+                    line_thickness,
+                    cv2.LINE_AA
+                )
 
         return annotated_image
 
