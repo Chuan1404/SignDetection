@@ -12,7 +12,7 @@ mp_drawing = vision.drawing_utils
 mp_drawing_styles = vision.drawing_styles
 
 MARGIN = 10  # pixels
-FONT_SIZE = 3000
+FONT_SIZE = 1
 FONT_THICKNESS = 1
 HANDEDNESS_TEXT_COLOR = (88, 205, 54)
 
@@ -59,10 +59,6 @@ class HandDetection:
         detection_result = self.video_detector.detect_for_video(mp_image, int(time.time() * 1000))
 
         return detection_result
-
-    
-
-   
 
     def draw_landmarks_on_image(self, rgb_image, detection_result, predicted_label=None):
         hand_landmarks_list = detection_result.hand_landmarks
@@ -126,7 +122,7 @@ class HandDetection:
                     f"Letter: {predicted_label}",
                     (50, 50),
                     cv2.FONT_HERSHEY_DUPLEX,
-                    3,
+                    FONT_SIZE,
                     (0, 0, 255),
                     line_thickness,
                     cv2.LINE_AA

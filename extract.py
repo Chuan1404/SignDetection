@@ -29,7 +29,8 @@ for i in range(len(dataset)):
 
     if result.hand_landmarks:
         base = result.hand_landmarks[0][0]
-        for landmarks in result.hand_landmarks:
+        for landmarks in result.hand_landmarks:\
+    
             feature = []
             for landmark in landmarks:
                 feature.extend(

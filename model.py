@@ -2,6 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from fusion import MultiStreamFusion
+from models.LLM import LLMDecoder
+from models.finger_recognition import FingerspellingEncoder
+from models.lip_recognition import LipreadingEncoder
+from models.sign_recognition import SignEncoder
+
+
 class SignModel(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
@@ -25,3 +32,21 @@ class SignModel(nn.Module):
         x = self.dropout(x)
         x = self.fc4(x)  # no activation here, use CrossEntropyLoss
         return x
+
+class MultiStreamLLM(nn.Module):
+    def __init__(self, vocab_size=10000):
+        super().__init__()
+        self.sign_enc = SignEncoder()
+        self.finger_enc = FingerspellingEncoder()
+        self.lip_enc = LipreadingEncoder()
+        self.fusion = MultiStreamFusion()
+        self.decoder = LLMDecoder(vocab_size=vocab_size)
+
+    def forward(self, sign_x, finger_x, lip_x, tgt_seq):
+        sign_feat = self.sign_enc(sign_x)
+        finger_feat = self.finger_enc(finger_x)
+        lip_feat = self.lip_enc(lip_x)
+
+        fused = self.fusion([sign_feat, finger_feat, lip_feat])
+        logits = self.decoder(fused, tgt_seq)
+        return logits
