@@ -4,10 +4,9 @@ import torch.nn.functional as F
 
 
 class LipreadingEncoder(nn.Module):
-    def __init__(self, input_dim=256, hidden_dim=128):
+    def __init__(self, input_dim=256, hidden_dim=256):
         super().__init__()
-        self.fc = nn.Linear(input_dim, hidden_dim)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
 
     def forward(self, x):
-        # x: [batch, seq_len, input_dim]
-        return F.relu(self.fc(x))  # [batch, seq_len, hidden_dim]
+        return self.lstm(x)[0]  # [B, T, 512]

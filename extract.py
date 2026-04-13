@@ -1,10 +1,8 @@
-import os
-
 import numpy as np
 import torchvision.transforms as transforms
 
-from datasets_loader.asl_dataset import ASLDataset
-from hand_detection import HandDetection
+from src.data.asl_dataset import ASLDataset
+from src.utils.hand_detection import HandDetection
 
 # Create label dictionary
 data_path = 'C:\\Users\\ADMIN\\OneDrive\\Desktop\\SignDetection\\datasets\\ASL_Alphabet_Dataset\\asl_alphabet_train'

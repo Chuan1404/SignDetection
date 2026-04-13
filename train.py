@@ -3,7 +3,7 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch import nn
 
-from datasets_loader.asl_dataset import ASLDataset
+from src.data.asl_dataset import ASLDataset
 from model import SignModel
 
 features = np.load("features.npy")
