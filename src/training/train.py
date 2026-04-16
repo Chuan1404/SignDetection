@@ -4,10 +4,10 @@ import torch
 from torch import nn
 
 from src.data.asl_dataset import ASLDataset
-from model import SignModel
+from models.model import SignModel
 
 features = np.load("features.npy")
-labels = np.load("labels.npy")
+labels = np.load("../../labels.npy")
 
 features_train, features_test, labels_train, labels_test = train_test_split(
     features, labels, test_size=0.2, random_state=42

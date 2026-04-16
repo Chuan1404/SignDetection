@@ -45,5 +45,5 @@ features = np.array(features)
 labels = np.array(labels)
 
 np.save('features.npy', features)
-np.save('labels.npy', labels)
+np.save('../../labels.npy', labels)
 

@@ -1,6 +1,6 @@
 from src.data.how2sign_dataset import How2SignDataset
 from torch.utils.data import DataLoader
-from model import MultiStreamModel
+from models.model import MultiStreamModel
 
 def main():
 

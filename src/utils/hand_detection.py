@@ -34,7 +34,7 @@ FINGER_COLORS = {
 }
 class HandDetection:
     def __init__(self):
-        base_options = python.BaseOptions(model_asset_path=r'/pretrained/hand_landmarker.task')
+        base_options = python.BaseOptions(model_asset_path='../../pretrained/hand_landmarker.task')
 
         # Video
         video_options = vision.HandLandmarkerOptions(

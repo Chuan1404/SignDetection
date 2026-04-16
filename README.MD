@@ -26,3 +26,6 @@ ai-project/
 │
 ├── requirements.txt
 ├── README.md
+
+
+data → processing → model → training → evaluation → deployment
