@@ -4,7 +4,7 @@ from src.utils.face_detection import FaceDetection
 from src.utils.hand_detection import HandDetection
 from src.utils.pose_detection import PoseDetection
 
-video_path = r'/data/raw/how2sign\0-0kX3XoMPQ_6-3-rgb_front.mp4'
+video_path = r'datasets/raw/how2sign_raw\0-0kX3XoMPQ_6-3-rgb_front.mp4'
 cap = cv2.VideoCapture(video_path)
 
 hand_detection = HandDetection()

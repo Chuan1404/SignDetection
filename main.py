@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import pandas as pd
 from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
+import os
 
 from models.sign_translator import SignTranslator
 from src.data.how2sign import How2SignDataset
@@ -12,18 +13,19 @@ from src.utils.tokenizer import Tokenizer
 BATCH_SIZE = 8
 EPOCHS = 30
 LR = 1e-4
-TRAIN_CSV = r'C:\Users\ADMIN\OneDrive\Desktop\SignDetection\datasets\how2sign\tsv_files_how2sign\tsv_files_how2sign\cvpr23.fairseq.i3d.train.how2sign.tsv'
-VAL_CSV = r'C:\Users\ADMIN\OneDrive\Desktop\SignDetection\datasets\how2sign\tsv_files_how2sign\tsv_files_how2sign\cvpr23.fairseq.i3d.val.how2sign.tsv'
+TRAIN_CSV = 'datasets/raw/how2sign/tsv_files_how2sign/tsv_files_how2sign/cvpr23.fairseq.i3d.train.how2sign.tsv'
+VAL_CSV = 'datasets/raw/how2sign/tsv_files_how2sign/tsv_files_how2sign/cvpr23.fairseq.i3d.val.how2sign.tsv'
+SAVE_DIR = os.path.abspath("outputs/models")
 
 def main():
-    train_df = pd.read_csv(TRAIN_CSV,sep="\t")
+    train_df = pd.read_csv(os.path.abspath(TRAIN_CSV), sep="\t")
     # val_df = pd.read_csv(VAL_CSV, sep="\t")
 
     tokenizer = Tokenizer()
     tokenizer.build_vocab(train_df["translation"].tolist())
 
-    train_ds = How2SignDataset(TRAIN_CSV, tokenizer)
-    val_ds = How2SignDataset(VAL_CSV, tokenizer)
+    train_ds = How2SignDataset(os.path.abspath(TRAIN_CSV), tokenizer)
+    val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer)
 
     train_loader = DataLoader(
         train_ds,
@@ -41,9 +43,7 @@ def main():
 
     # detect feature dim
     sample_i3d, sample_mp, sample_txt = train_ds[0]
-    print(f"sample_i3d: {sample_i3d.shape}")
-    print(f"sample_mp: {sample_mp.shape}")
-    print(f"sample_txt: {sample_txt.shape}")
+
     model = SignTranslator(
         sample_i3d.shape[1],
         sample_mp.shape[1],
@@ -65,7 +65,7 @@ def main():
 
         if val_loss < best_loss:
             best_loss = val_loss
-            torch.save(model.state_dict(), r"C:\Users\ADMIN\OneDrive\Desktop\SignDetection\src\outputs\models\save_model.pth")
+            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "save_model.pth"))
             print("Saved best model")
 
     print("Done")
@@ -85,21 +85,6 @@ def collate_fn(batch):
 
     return i3d, mp, txt
 
-# def pad_sequence(seq_list, pad=0):
-#     max_len = max([x.shape[0] for x in seq_list])
-#
-#     out = []
-#
-#     for x in seq_list:
-#         pad_len = max_len - x.shape[0]
-#
-#         if len(x.shape) == 2:
-#             p = torch.zeros(pad_len, x.shape[1])
-#         else:
-#             p = torch.full((pad_len,), pad)
-#
-#         out.append(torch.cat([x, p], dim=0))
-
 def train_one_epoch(model, loader, criterion, optimizer):
     model.train()
 
@@ -108,7 +93,6 @@ def train_one_epoch(model, loader, criterion, optimizer):
     for i3d, mp, txt in tqdm(loader):
         inp = txt[:, :-1]
         tgt = txt[:, 1:]
-        print(f"i3d: {i3d.shape}, mp: {mp.shape}, inp: {inp.shape}")
 
         out = model(i3d, mp, inp)
 
@@ -146,23 +130,7 @@ def validate(model, loader, criterion):
             total_loss += loss.item()
 
     return total_loss / len(loader)
-# def main():
-#
-#     dataset = How2SignDataset("data/annotations/how2sign_train.csv")
-#     loader = DataLoader(dataset)
-#
-#     model = MultiStreamModel()
-#
-#     for video_name, sentence in loader:
-#         # print("sign_x:", sign_x.shape)
-#         # print("finger_x:", finger_x.shape)
-#         # print("lip_x:", lip_x.shape)
-#         # print("tgt_seq:", tgt_seq.shape)
-#
-#         # logits = model(sign_x, finger_x, lip_x, tgt_seq)
-#
-#         print("Output:", video_name, sentence)
-#
+
 if __name__ == "__main__":
     main()
 

@@ -4,8 +4,8 @@ import pandas as pd
 from torch.utils.data import Dataset
 import os
 
-base_i3d = r"C:\Users\ADMIN\OneDrive\Desktop\SignDetection\datasets\how2sign\i3d_features_how2sign\i3d_features_how2sign\train"
-base_mp = r"C:\Users\ADMIN\OneDrive\Desktop\SignDetection\datasets\how2sign\mediapipe_features_how2sign\mediapipe_features\train"
+base_i3d = os.path.abspath("datasets/raw/how2sign/i3d_features_how2sign/i3d_features_how2sign/train")
+base_mp = os.path.abspath("datasets/raw/how2sign/mediapipe_features_how2sign/mediapipe_features/train")
 
 class How2SignDataset(Dataset):
     def __init__(self, csv_path, tokenizer):
@@ -19,10 +19,10 @@ class How2SignDataset(Dataset):
         row = self.df.iloc[idx]
 
         # (frames, feature_dimension)
-        i3d = np.load(os.path.join(base_i3d, row["id"] + ".npy"))
+        i3d = np.load(os.path.join(base_i3d, f"{row['id']}.npy"))
 
         # (frames, body landmarks, xyz)
-        mp = np.load(os.path.join(base_mp, row["id"] + ".npy"))
+        mp = np.load(os.path.join(base_mp, f"{row['id']}.npy"))
         T = mp.shape[0]
         mp = np.reshape(mp, (T, -1))
 

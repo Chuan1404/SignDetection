@@ -7,7 +7,7 @@ import cv2
 from src.data import how2sign_dataset
 from src.utils.hand_detection import HandDetection
 
-how2sign_dataset = how2sign_dataset.How2SignDataset(r"D:\SignDetection\data\annotations\how2sign_train.csv")
+how2sign_dataset = how2sign_dataset.How2SignDataset(r"/datasets\annotations\how2sign_train.csv")
 loader = DataLoader(how2sign_dataset)
 
 hand_detection = HandDetection()
