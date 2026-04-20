@@ -1,3 +1,5 @@
+from torch.utils.data import Subset
+import random
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -6,26 +8,35 @@ from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
 import os
 
+from config import BASE_MP_TRAIN, BASE_I3D_TRAIN, BASE_I3D_VAL, BASE_MP_VAL, TRAIN_CSV, VAL_CSV, BATCH_SIZE, LR
 from models.sign_translator import SignTranslator
 from src.data.how2sign import How2SignDataset
 from src.utils.tokenizer import Tokenizer
 
-BATCH_SIZE = 8
-EPOCHS = 30
-LR = 1e-4
-TRAIN_CSV = 'datasets/raw/how2sign/tsv_files_how2sign/tsv_files_how2sign/cvpr23.fairseq.i3d.train.how2sign.tsv'
-VAL_CSV = 'datasets/raw/how2sign/tsv_files_how2sign/tsv_files_how2sign/cvpr23.fairseq.i3d.val.how2sign.tsv'
+EPOCHS = 10
+
 SAVE_DIR = os.path.abspath("outputs/models")
 
+
+# Build tokenizer
+train_df = pd.read_csv(os.path.abspath(TRAIN_CSV), sep="\t")
+tokenizer = Tokenizer()
+tokenizer.build_vocab(train_df["translation"].tolist())
+
 def main():
-    train_df = pd.read_csv(os.path.abspath(TRAIN_CSV), sep="\t")
+
     # val_df = pd.read_csv(VAL_CSV, sep="\t")
 
-    tokenizer = Tokenizer()
-    tokenizer.build_vocab(train_df["translation"].tolist())
+    train_ds = How2SignDataset(os.path.abspath(TRAIN_CSV), tokenizer, base_mp=BASE_MP_TRAIN, base_i3d=BASE_I3D_TRAIN)
+    val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer, base_mp=BASE_MP_VAL, base_i3d=BASE_I3D_VAL)
 
-    train_ds = How2SignDataset(os.path.abspath(TRAIN_CSV), tokenizer)
-    val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer)
+    # use 10% ds
+    n = len(train_ds)
+    subset_size = int(0.1 * n)
+
+    indices = random.sample(range(n), subset_size)
+
+    train_ds = Subset(train_ds, indices)
 
     train_loader = DataLoader(
         train_ds,
@@ -46,7 +57,7 @@ def main():
 
     model = SignTranslator(
         sample_i3d.shape[1],
-        sample_mp.shape[1],
+        sample_mp.shape[1] * sample_mp.shape[2],
         tokenizer.vocab_size
     )
 
@@ -70,18 +81,31 @@ def main():
 
     print("Done")
 
+
 def collate_fn(batch):
     i3d, mp, txt = zip(*batch)
 
-    # ensure tensors
-    i3d = [torch.tensor(x).float().squeeze() for x in i3d]
-    mp  = [torch.tensor(x).float().squeeze() for x in mp]
-    txt = [torch.tensor(x).long() for x in txt]
+    fixed_i3d = []
+    fixed_mp = []
+    fixed_txt = []
 
-    # pad variable lengths
-    i3d = pad_sequence(i3d, batch_first=True)
-    mp  = pad_sequence(mp, batch_first=True)
-    txt = pad_sequence(txt, batch_first=True, padding_value=0)
+    for x in i3d:
+        x = x.float()
+        fixed_i3d.append(x)
+
+    for x in mp:
+        x = x.float()
+        T = x.shape[0]
+        x = torch.reshape(x, (T, -1))
+        fixed_mp.append(x)
+
+    for x in txt:
+        fixed_txt.append(x.long())
+
+    # pad variable-length sequences
+    i3d = pad_sequence(fixed_i3d, batch_first=True)          # (B, Ti, 1024)
+    mp  = pad_sequence(fixed_mp, batch_first=True)           # (B, Tm, 99)
+    txt = pad_sequence(fixed_txt, batch_first=True, padding_value=0)
 
     return i3d, mp, txt
 
@@ -91,9 +115,14 @@ def train_one_epoch(model, loader, criterion, optimizer):
     total_loss = 0
 
     for i3d, mp, txt in tqdm(loader):
+        print(i3d.shape)
+        print(mp.shape)
+        print(txt.shape)
+
         inp = txt[:, :-1]
         tgt = txt[:, 1:]
 
+        print(f"txt:{txt.shape} tgt:{tgt.shape}")
         out = model(i3d, mp, inp)
 
         loss = criterion(
