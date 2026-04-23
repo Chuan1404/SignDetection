@@ -13,7 +13,8 @@ from models.sign_translator import SignTranslator
 from src.data.how2sign import How2SignDataset
 from src.utils.tokenizer import Tokenizer
 
-EPOCHS = 10
+EPOCHS = 30
+MAX_LEN = 2000
 
 SAVE_DIR = os.path.abspath("outputs/models")
 
@@ -31,12 +32,12 @@ def main():
     val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer, base_mp=BASE_MP_VAL, base_i3d=BASE_I3D_VAL)
 
     # use 10% ds
-    n = len(train_ds)
-    subset_size = int(0.1 * n)
-
-    indices = random.sample(range(n), subset_size)
-
-    train_ds = Subset(train_ds, indices)
+    # n = len(train_ds)
+    # subset_size = int(0.1 * n)
+    #
+    # indices = random.sample(range(n), subset_size)
+    #
+    # train_ds = Subset(train_ds, indices)
 
     train_loader = DataLoader(
         train_ds,
@@ -82,30 +83,48 @@ def main():
     print("Done")
 
 
+import torch
+from torch.nn.utils.rnn import pad_sequence
+
+MAX_TEXT_LEN = 100
+
 def collate_fn(batch):
-    i3d, mp, txt = zip(*batch)
+    i3d_list = []
+    mp_list = []
+    txt_list = []
 
-    fixed_i3d = []
-    fixed_mp = []
-    fixed_txt = []
+    for i3d, mp, txt in batch:
+        try:
+            i3d = i3d.float()
+            mp = mp.float()
+            txt = txt.long()
 
-    for x in i3d:
-        x = x.float()
-        fixed_i3d.append(x)
+            # visual checks
+            if i3d.shape[0] > MAX_LEN:
+                continue
 
-    for x in mp:
-        x = x.float()
-        T = x.shape[0]
-        x = torch.reshape(x, (T, -1))
-        fixed_mp.append(x)
+            if mp.shape[0] > MAX_LEN:
+                continue
 
-    for x in txt:
-        fixed_txt.append(x.long())
+            # text check (VERY IMPORTANT)
+            if txt.shape[0] > MAX_TEXT_LEN:
+                continue
 
-    # pad variable-length sequences
-    i3d = pad_sequence(fixed_i3d, batch_first=True)          # (B, Ti, 1024)
-    mp  = pad_sequence(fixed_mp, batch_first=True)           # (B, Tm, 99)
-    txt = pad_sequence(fixed_txt, batch_first=True, padding_value=0)
+            mp = mp.reshape(mp.shape[0], -1)
+
+            i3d_list.append(i3d)
+            mp_list.append(mp)
+            txt_list.append(txt)
+
+        except:
+            continue
+
+    if len(i3d_list) == 0:
+        return None
+
+    i3d = pad_sequence(i3d_list, batch_first=True)
+    mp  = pad_sequence(mp_list, batch_first=True)
+    txt = pad_sequence(txt_list, batch_first=True, padding_value=0)
 
     return i3d, mp, txt
 
@@ -113,16 +132,15 @@ def train_one_epoch(model, loader, criterion, optimizer):
     model.train()
 
     total_loss = 0
+    print(f"loader: {tqdm(loader)}")
+    for batch in tqdm(loader):
+        if batch is None:
+            continue
 
-    for i3d, mp, txt in tqdm(loader):
-        print(i3d.shape)
-        print(mp.shape)
-        print(txt.shape)
-
+        i3d, mp, txt = batch
         inp = txt[:, :-1]
         tgt = txt[:, 1:]
 
-        print(f"txt:{txt.shape} tgt:{tgt.shape}")
         out = model(i3d, mp, inp)
 
         loss = criterion(
