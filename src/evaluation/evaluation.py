@@ -129,12 +129,12 @@ def main():
     )
 
     # use 10% ds
-    n = len(test_ds)
-    subset_size = int(0.01 * n)
+    # n = len(test_ds)
+    # subset_size = int(0.1 * n)
 
-    indices = random.sample(range(n), subset_size)
+    # indices = random.sample(range(n), subset_size)
 
-    test_ds = Subset(test_ds, indices)
+    # test_ds = Subset(test_ds, indices)
 
     test_loader = DataLoader(
         test_ds,
@@ -181,11 +181,10 @@ def main():
         references.append(gt_text)
 
         # show first 20 examples
-        if idx < 20:
-            print("=" * 60)
-            print("Sample:", idx + 1)
-            print("GT  :", gt_text)
-            print("PRED:", pred_text)
+        print("=" * 60)
+        print("Sample:", idx + 1)
+        print("GT  :", gt_text)
+        print("PRED:", pred_text)
 
     evaluate_metrics(predictions, references)
 

@@ -32,12 +32,12 @@ def main():
     val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer, base_mp=BASE_MP_VAL, base_i3d=BASE_I3D_VAL)
 
     # use 10% ds
-    # n = len(train_ds)
-    # subset_size = int(0.1 * n)
-    #
-    # indices = random.sample(range(n), subset_size)
-    #
-    # train_ds = Subset(train_ds, indices)
+    n = len(train_ds)
+    subset_size = int(0.1 * n)
+
+    indices = random.sample(range(n), subset_size)
+
+    train_ds = Subset(train_ds, indices)
 
     train_loader = DataLoader(
         train_ds,
@@ -77,7 +77,7 @@ def main():
 
         if val_loss < best_loss:
             best_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "save_model.pth"))
+            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "save_model1.pth"))
             print("Saved best model")
 
     print("Done")
@@ -89,9 +89,7 @@ from torch.nn.utils.rnn import pad_sequence
 MAX_TEXT_LEN = 100
 
 def collate_fn(batch):
-    i3d_list = []
-    mp_list = []
-    txt_list = []
+    i3d_list, mp_list, txt_list = [], [], []
 
     for i3d, mp, txt in batch:
         try:
@@ -99,16 +97,10 @@ def collate_fn(batch):
             mp = mp.float()
             txt = txt.long()
 
-            # visual checks
-            if i3d.shape[0] > MAX_LEN:
-                continue
-
-            if mp.shape[0] > MAX_LEN:
-                continue
-
-            # text check (VERY IMPORTANT)
-            if txt.shape[0] > MAX_TEXT_LEN:
-                continue
+            # OPTIONAL: truncate thay vì skip
+            i3d = i3d[:MAX_LEN]
+            mp = mp[:MAX_LEN]
+            txt = txt[:MAX_TEXT_LEN]
 
             mp = mp.reshape(mp.shape[0], -1)
 
@@ -132,12 +124,14 @@ def train_one_epoch(model, loader, criterion, optimizer):
     model.train()
 
     total_loss = 0
-    print(f"loader: {tqdm(loader)}")
+    total_batches = 0
+
     for batch in tqdm(loader):
         if batch is None:
             continue
 
         i3d, mp, txt = batch
+
         inp = txt[:, :-1]
         tgt = txt[:, 1:]
 
@@ -153,16 +147,22 @@ def train_one_epoch(model, loader, criterion, optimizer):
         optimizer.step()
 
         total_loss += loss.item()
+        total_batches += 1
 
-    return total_loss / len(loader)
+    return total_loss / max(total_batches, 1)
 
 def validate(model, loader, criterion):
     model.eval()
 
     total_loss = 0
+    total_batches = 0
 
     with torch.no_grad():
-        for i3d, mp, txt in loader:
+        for batch in loader:
+            if batch is None:
+                continue
+
+            i3d, mp, txt = batch
 
             inp = txt[:, :-1]
             tgt = txt[:, 1:]
@@ -175,8 +175,9 @@ def validate(model, loader, criterion):
             )
 
             total_loss += loss.item()
+            total_batches += 1
 
-    return total_loss / len(loader)
+    return total_loss / max(total_batches, 1)
 
 if __name__ == "__main__":
     main()

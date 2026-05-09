@@ -61,6 +61,41 @@ class HandDetection:
 
         return detection_result
 
+    def extract_hand_regions(self, frame, detection_result, padding=20):
+        hand_crops = []
+
+        height, width, _ = frame.shape
+
+        if not detection_result.hand_landmarks:
+            return hand_crops
+
+        for hand_landmarks in detection_result.hand_landmarks:
+
+            x_list = []
+            y_list = []
+
+            for lm in hand_landmarks:
+                print(len(hand_landmarks))
+                x_list.append(int(lm.x * width))
+                y_list.append(int(lm.y * height))
+
+            x_min = max(min(x_list) - padding, 0)
+            y_min = max(min(y_list) - padding, 0)
+
+            x_max = min(max(x_list) + padding, width)
+            y_max = min(max(y_list) + padding, height)
+
+            # crop hand
+            hand_crop = frame[y_min:y_max, x_min:x_max]
+
+            if hand_crop.size != 0:
+                # resize to 224x224
+                hand_crop = cv2.resize(hand_crop, (224, 224))
+
+                hand_crops.append(hand_crop)
+
+        return hand_crops
+
     def draw_landmarks_on_image(self, rgb_image, detection_result, predicted_label=None):
         hand_landmarks_list = detection_result.hand_landmarks
         handedness_list = detection_result.handedness

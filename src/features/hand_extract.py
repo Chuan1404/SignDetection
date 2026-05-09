@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import cv2
 
-from src.data import how2sign_dataset
+from src.data import how2sign_raw
 from src.utils.hand_detection import HandDetection
 
 how2sign_dataset = how2sign_dataset.How2SignDataset(r"/datasets\annotations\how2sign_train.csv")

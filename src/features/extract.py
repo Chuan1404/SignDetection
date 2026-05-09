@@ -1,49 +1,51 @@
-import numpy as np
-import torchvision.transforms as transforms
+import cv2 as cv
 
-from src.data.asl_dataset import ASLDataset
-from src.utils.hand_detection import HandDetection
-
-# Create label dictionary
-data_path = 'C:\\Users\\ADMIN\\OneDrive\\Desktop\\SignDetection\\datasets\\ASL_Alphabet_Dataset\\asl_alphabet_train'
-
-# Create transform
-transform = transforms.Compose([
-    transforms.ToTensor(),
-])
-
-hand_detection = HandDetection()
-
-dataset = ASLDataset(data_path)
-# loader = DataLoader(dataset, batch_size=32, shuffle=True)
-features = []
-labels = []
-
-for i in range(len(dataset)):
-    img, label = dataset[i]
-    # print(dataset.label_map[label])
-
-    result = hand_detection.detect_image(img)
-
-    if result.hand_landmarks:
-        base = result.hand_landmarks[0][0]
-        for landmarks in result.hand_landmarks:\
-    
-            feature = []
-            for landmark in landmarks:
-                feature.extend(
-                    [landmark.x - base.x,
-                     landmark.y - base.y,
-                     landmark.z - base.z])
-
-            features.append(feature)
-            labels.append(label)
-
-hand_detection.close()
-
-features = np.array(features)
-labels = np.array(labels)
-
-np.save('features.npy', features)
-np.save('../../labels.npy', labels)
-
+# import numpy as np
+# import torchvision.transforms as transforms
+#
+# from src.data.asl_dataset import ASLDataset
+# from src.utils.hand_detection import HandDetection
+#
+# # Create label dictionary
+# data_path = 'C:\\Users\\ADMIN\\OneDrive\\Desktop\\SignDetection\\datasets\\ASL_Alphabet_Dataset\\asl_alphabet_train'
+#
+# # Create transform
+# transform = transforms.Compose([
+#     transforms.ToTensor(),
+# ])
+#
+# hand_detection = HandDetection()
+#
+# dataset = ASLDataset(data_path)
+# # loader = DataLoader(dataset, batch_size=32, shuffle=True)
+# features = []
+# labels = []
+#
+# for i in range(len(dataset)):
+#     img, label = dataset[i]
+#     # print(dataset.label_map[label])
+#
+#     result = hand_detection.detect_image(img)
+#
+#     if result.hand_landmarks:
+#         base = result.hand_landmarks[0][0]
+#         for landmarks in result.hand_landmarks:\
+#
+#             feature = []
+#             for landmark in landmarks:
+#                 feature.extend(
+#                     [landmark.x - base.x,
+#                      landmark.y - base.y,
+#                      landmark.z - base.z])
+#
+#             features.append(feature)
+#             labels.append(label)
+#
+# hand_detection.close()
+#
+# features = np.array(features)
+# labels = np.array(labels)
+#
+# np.save('features.npy', features)
+# np.save('../../labels.npy', labels)
+#
