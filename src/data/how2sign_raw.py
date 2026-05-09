@@ -19,7 +19,7 @@ class How2SignDataset(Dataset):
 
         i3d = np.load(row["i3d_path"])      # (T, D1)
         mp  = np.load(row["mp_path"])       # (T, D2)
-
+        print(i3d.shape, mp.shape)
         text = self.tokenizer.encode(row["text"])
 
         return (
