@@ -34,11 +34,17 @@ FINGER_COLORS = {
 }
 class HandDetection:
     def __init__(self):
+        self.prev_hand_crops = hand_crops = {
+            "Left": None,
+            "Right": None
+        }
+
         base_options = python.BaseOptions(model_asset_path='../../pretrained/hand_landmarker.task')
 
         # Video
         video_options = vision.HandLandmarkerOptions(
             base_options=base_options,
+            min_hand_detection_confidence = 0.3,
             num_hands=2,
             running_mode=vision.RunningMode.VIDEO)
         self.video_detector = vision.HandLandmarker.create_from_options(video_options)
@@ -62,37 +68,45 @@ class HandDetection:
         return detection_result
 
     def extract_hand_regions(self, frame, detection_result, padding=20):
-        hand_crops = []
+
+        hand_crops = self.prev_hand_crops.copy()
 
         height, width, _ = frame.shape
 
         if not detection_result.hand_landmarks:
             return hand_crops
 
-        for hand_landmarks in detection_result.hand_landmarks:
+        for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
+
+            hand_label = detection_result.handedness[idx][0].category_name
 
             x_list = []
             y_list = []
 
             for lm in hand_landmarks:
-                print(len(hand_landmarks))
                 x_list.append(int(lm.x * width))
                 y_list.append(int(lm.y * height))
 
-            x_min = max(min(x_list) - padding, 0)
-            y_min = max(min(y_list) - padding, 0)
+            x_min, x_max = min(x_list), max(x_list)
+            y_min, y_max = min(y_list), max(y_list)
 
-            x_max = min(max(x_list) + padding, width)
-            y_max = min(max(y_list) + padding, height)
+            cx = (x_min + x_max) // 2
+            cy = (y_min + y_max) // 2
 
-            # crop hand
-            hand_crop = frame[y_min:y_max, x_min:x_max]
+            box_size = max(x_max - x_min, y_max - y_min) + padding
+            half = box_size // 2
 
-            if hand_crop.size != 0:
-                # resize to 224x224
-                hand_crop = cv2.resize(hand_crop, (224, 224))
+            x1 = max(cx - half, 0)
+            y1 = max(cy - half, 0)
+            x2 = min(cx + half, width)
+            y2 = min(cy + half, height)
 
-                hand_crops.append(hand_crop)
+            hand_crop = frame[y1:y2, x1:x2]
+
+            hand_crop = cv2.resize(hand_crop, (224, 224))
+            hand_crops[hand_label] = hand_crop
+
+        self.prev_hand_crops = hand_crops.copy()
 
         return hand_crops
 
@@ -171,3 +185,4 @@ class HandDetection:
             self.video_detector.close()
         if self.image_detector:
             self.image_detector.close()
+

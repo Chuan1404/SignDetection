@@ -1,184 +1,202 @@
-from torch.utils.data import Subset
-import random
-import torch
-from torch import nn
-from torch.utils.data import DataLoader
-import pandas as pd
-from tqdm import tqdm
-from torch.nn.utils.rnn import pad_sequence
+from pandas.core.reshape import reshape
+
+from config import ROOT
+
+from src.data.STL_dataset import SLTDataset
+from src.models.SLT_model import SLTModel
+from src.utils.vocabulary import Vocabulary
+
 import os
-
-from config import BASE_MP_TRAIN, BASE_I3D_TRAIN, BASE_I3D_VAL, BASE_MP_VAL, TRAIN_CSV, VAL_CSV, BATCH_SIZE, LR
-from models.sign_translator import SignTranslator
-from src.data.how2sign import How2SignDataset
-from src.utils.tokenizer import Tokenizer
-
-EPOCHS = 30
-MAX_LEN = 2000
-
-SAVE_DIR = os.path.abspath("outputs/models")
-
-
-# Build tokenizer
-train_df = pd.read_csv(os.path.abspath(TRAIN_CSV), sep="\t")
-tokenizer = Tokenizer()
-tokenizer.build_vocab(train_df["translation"].tolist())
-
-def main():
-
-    # val_df = pd.read_csv(VAL_CSV, sep="\t")
-
-    train_ds = How2SignDataset(os.path.abspath(TRAIN_CSV), tokenizer, base_mp=BASE_MP_TRAIN, base_i3d=BASE_I3D_TRAIN)
-    val_ds = How2SignDataset(os.path.abspath(VAL_CSV), tokenizer, base_mp=BASE_MP_VAL, base_i3d=BASE_I3D_VAL)
-
-    # use 10% ds
-    n = len(train_ds)
-    subset_size = int(0.1 * n)
-
-    indices = random.sample(range(n), subset_size)
-
-    train_ds = Subset(train_ds, indices)
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        collate_fn=collate_fn
-    )
-
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        collate_fn=collate_fn
-    )
-
-    # detect feature dim
-    sample_i3d, sample_mp, sample_txt = train_ds[0]
-
-    model = SignTranslator(
-        sample_i3d.shape[1],
-        sample_mp.shape[1] * sample_mp.shape[2],
-        tokenizer.vocab_size
-    )
-
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-
-    best_loss = 999
-
-    for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer)
-        val_loss = validate(model, val_loader, criterion)
-
-        print(f"Epoch {epoch + 1}")
-        print("Train:", train_loss)
-        print("Val:", val_loss)
-
-        if val_loss < best_loss:
-            best_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "save_model1.pth"))
-            print("Saved best model")
-
-    print("Done")
-
-
 import torch
+import torch.nn as nn
+import pandas as pd
+
+from tqdm import tqdm
+
+from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
-MAX_TEXT_LEN = 100
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+DATA_PATH = rf"{ROOT}\datasets\processed\features"
+
+CSV_PATH = rf"{ROOT}\datasets\annotations\how2sign_train.csv"
+
+SAVE_DIR = rf"{ROOT}\models"
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+BATCH_SIZE = 2
+EPOCHS = 10
+LR = 1e-4
+
+PAD_IDX = 0
+SOS_IDX = 1
+EOS_IDX = 2
+
+
+def align(left, right):
+    T = min(left.shape[1], right.shape[1])
+
+    left = left[:, :T]
+    right = right[:, :T]
+    return left, right
 
 def collate_fn(batch):
-    i3d_list, mp_list, txt_list = [], [], []
 
-    for i3d, mp, txt in batch:
-        try:
-            i3d = i3d.float()
-            mp = mp.float()
-            txt = txt.long()
+    lefts = [x[0] for x in batch]
+    rights = [x[1] for x in batch]
+    texts = [x[2] for x in batch]
 
-            # OPTIONAL: truncate thay vì skip
-            i3d = i3d[:MAX_LEN]
-            mp = mp[:MAX_LEN]
-            txt = txt[:MAX_TEXT_LEN]
+    lefts = pad_sequence(
+        lefts,
+        batch_first=True
+    )
 
-            mp = mp.reshape(mp.shape[0], -1)
+    rights = pad_sequence(
+        rights,
+        batch_first=True
+    )
 
-            i3d_list.append(i3d)
-            mp_list.append(mp)
-            txt_list.append(txt)
+    texts = pad_sequence(
+        texts,
+        batch_first=True,
+        padding_value=PAD_IDX
+    )
 
-        except:
-            continue
+    return lefts, rights, texts
 
-    if len(i3d_list) == 0:
-        return None
 
-    i3d = pad_sequence(i3d_list, batch_first=True)
-    mp  = pad_sequence(mp_list, batch_first=True)
-    txt = pad_sequence(txt_list, batch_first=True, padding_value=0)
 
-    return i3d, mp, txt
+df = pd.read_csv(CSV_PATH, sep="\t")
 
-def train_one_epoch(model, loader, criterion, optimizer):
+# use 10% first
+# df = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
+
+
+vocab = Vocabulary()
+
+for s in tqdm(df["SENTENCE"].tolist()):
+
+    vocab.build_vocab(
+        s.lower().split()
+    )
+
+# =========================================================
+# DATASET
+# =========================================================
+
+dataset = SLTDataset(DATA_PATH)
+
+loader = DataLoader(
+    dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    collate_fn=collate_fn
+)
+
+# =========================================================
+# MODEL
+# =========================================================
+
+model = SLTModel(
+    vocab_size=len(vocab.word2idx)
+).to(DEVICE)
+
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=LR
+)
+
+criterion = nn.CrossEntropyLoss(
+    ignore_index=PAD_IDX
+)
+
+print("VOCAB SIZE:", len(vocab.word2idx))
+
+def train_one_epoch():
     model.train()
 
     total_loss = 0
-    total_batches = 0
 
-    for batch in tqdm(loader):
-        if batch is None:
-            continue
+    for left, right, tgt in tqdm(loader):
 
-        i3d, mp, txt = batch
+        left, right = align(left, right)
 
-        inp = txt[:, :-1]
-        tgt = txt[:, 1:]
+        left = left.to(DEVICE)
 
-        out = model(i3d, mp, inp)
+        right = right.to(DEVICE)
+
+        tgt = tgt.to(DEVICE)
+
+        inp = tgt[:, :-1]
+
+        label = tgt[:, 1:]
+
+        out = model(
+            left,
+            right,
+            inp
+        )
 
         loss = criterion(
-            out.reshape(-1, out.shape[-1]),
-            tgt.reshape(-1)
+            out.reshape(-1, out.size(-1)),
+            label.reshape(-1)
         )
 
         optimizer.zero_grad()
+
         loss.backward()
+
         optimizer.step()
 
         total_loss += loss.item()
-        total_batches += 1
 
-    return total_loss / max(total_batches, 1)
+    return total_loss / len(loader)
 
-def validate(model, loader, criterion):
-    model.eval()
 
-    total_loss = 0
-    total_batches = 0
+best_loss = float("inf")
 
-    with torch.no_grad():
-        for batch in loader:
-            if batch is None:
-                continue
+for epoch in range(EPOCHS):
 
-            i3d, mp, txt = batch
+    loss = train_one_epoch()
 
-            inp = txt[:, :-1]
-            tgt = txt[:, 1:]
+    print(f"Epoch {epoch+1}/{EPOCHS}")
+    print(f"Loss: {loss:.4f}")
 
-            out = model(i3d, mp, inp)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss,
+        },
+        os.path.join(
+            SAVE_DIR,
+            "last_model.pt"
+        )
+    )
 
-            loss = criterion(
-                out.reshape(-1, out.shape[-1]),
-                tgt.reshape(-1)
+    if loss < best_loss:
+
+        best_loss = loss
+
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss": loss,
+            },
+            os.path.join(
+                SAVE_DIR,
+                "best_model.pt"
             )
+        )
 
-            total_loss += loss.item()
-            total_batches += 1
-
-    return total_loss / max(total_batches, 1)
-
-if __name__ == "__main__":
-    main()
-
+        print("Best model saved!")

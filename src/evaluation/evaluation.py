@@ -13,7 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 from config import ROOT, TRAIN_CSV, TEST_CSV, BASE_MP_TEST, BASE_I3D_TEST
 from models.sign_translator import SignTranslator
 from src.data.how2sign import How2SignDataset
-from src.utils.tokenizer import Tokenizer
+from src.utils.vocabulary import Tokenizer
 
 
 MODEL_PATH = os.path.join(ROOT, "outputs/models/save_model.pth")

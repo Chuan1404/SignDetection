@@ -14,3 +14,5 @@ BASE_I3D_VAL = os.path.join(ROOT, "datasets/raw/how2sign/i3d_features_how2sign/i
 BASE_MP_VAL = os.path.join(ROOT, "datasets/raw/how2sign/mediapipe_features_how2sign/mediapipe_features/val")
 BASE_I3D_TEST = os.path.join(ROOT, "datasets/raw/how2sign/i3d_features_how2sign/i3d_features_how2sign/test")
 BASE_MP_TEST = os.path.join(ROOT, "datasets/raw/how2sign/mediapipe_features_how2sign/mediapipe_features/test")
+
+HOW2SIGN_RAW_DATA = os.path.join(ROOT, "datasets/raw/how2sign_raw")

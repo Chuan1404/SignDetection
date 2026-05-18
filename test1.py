@@ -3,7 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 import pandas as pd
 import os
 from src.data.how2sign import How2SignDataset
-from src.utils.tokenizer import Tokenizer
+from src.utils.vocabulary import Tokenizer
 from torch.utils.data import DataLoader, Subset
 import random
 
