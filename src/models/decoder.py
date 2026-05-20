@@ -1,11 +1,13 @@
-import torch
 from torch import nn
+import torch
+import math
 
 from models.positional_encoding import PositionalEncoding
 
 PAD_IDX = 0
 SOS_IDX = 1
 EOS_IDX = 2
+
 
 class TextDecoder(nn.Module):
 
@@ -14,61 +16,125 @@ class TextDecoder(nn.Module):
         vocab_size,
         embed_dim=512,
         num_heads=8,
-        num_layers=4
+        num_layers=4,
+        dropout=0.1
     ):
 
         super().__init__()
 
+        self.embed_dim = embed_dim
+
+        # Token embedding
         self.embedding = nn.Embedding(
-            vocab_size,
-            embed_dim,
+            num_embeddings=vocab_size,
+            embedding_dim=embed_dim,
             padding_idx=PAD_IDX
         )
 
+        # Positional encoding
         self.position = PositionalEncoding(embed_dim)
 
+        # Dropout after embedding + position
+        self.dropout = nn.Dropout(dropout)
+
+        # Transformer decoder layer
         layer = nn.TransformerDecoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
+            dropout=dropout,
             batch_first=True
         )
 
+        # Multi-layer decoder
         self.decoder = nn.TransformerDecoder(
-            layer,
+            decoder_layer=layer,
             num_layers=num_layers
         )
 
+        # Final vocab projection
         self.fc = nn.Linear(
             embed_dim,
             vocab_size
         )
 
-    def generate_mask(self, size, device):
+    def generate_causal_mask(self, size, device):
+
+        """
+        Prevent decoder from seeing future tokens
+        """
 
         mask = torch.triu(
-            torch.ones(size, size),
+            torch.full((size, size), float("-inf")),
             diagonal=1
-        ).bool()
+        )
 
         return mask.to(device)
 
-    def forward(self, tgt, memory):
+    def forward(
+        self,
+        tgt_ids,
+        memory,
+        memory_padding_mask=None
+    ):
 
-        tgt = self.embedding(tgt)
+        """
+        Args:
+            tgt_ids:
+                [B, T]
 
+            memory:
+                [B, S, D]
+
+            memory_padding_mask:
+                [B, S]
+        """
+
+        # -------------------------
+        # Padding mask
+        # True = ignore
+        # -------------------------
+        tgt_padding_mask = (tgt_ids == PAD_IDX)
+
+        # -------------------------
+        # Embedding
+        # -------------------------
+        tgt = self.embedding(tgt_ids)
+
+        # Transformer embedding scaling
+        tgt = tgt * math.sqrt(self.embed_dim)
+
+        # -------------------------
+        # Positional encoding
+        # -------------------------
         tgt = self.position(tgt)
 
-        tgt_mask = self.generate_mask(
-            tgt.size(1),
-            tgt.device
+        tgt = self.dropout(tgt)
+
+        # -------------------------
+        # Causal mask
+        # -------------------------
+        tgt_mask = self.generate_causal_mask(
+            size=tgt.size(1),
+            device=tgt.device
         )
 
+        # -------------------------
+        # Transformer decoder
+        # -------------------------
         out = self.decoder(
             tgt=tgt,
             memory=memory,
-            tgt_mask=tgt_mask
+
+            tgt_mask=tgt_mask,
+
+            tgt_key_padding_mask=tgt_padding_mask,
+
+            memory_key_padding_mask=memory_padding_mask
         )
 
+        # -------------------------
+        # Vocabulary projection
+        # -------------------------
         out = self.fc(out)
 
         return out

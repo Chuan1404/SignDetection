@@ -35,6 +35,11 @@ class SLTModel(nn.Module):
             num_layers
         )
 
+        self.ctc_fc = nn.Linear(
+            embed_dim,
+            vocab_size
+        )
+
     def forward(
         self,
         left_feat,
@@ -51,12 +56,14 @@ class SLTModel(nn.Module):
 
         memory = self.encoder(x)
 
+        ctc_logits = self.ctc_fc(memory)
+
         out = self.decoder(
             tgt,
             memory
         )
 
-        return out
+        return out, ctc_logits
 
 @torch.no_grad()
 def generate(

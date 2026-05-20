@@ -48,25 +48,33 @@ class PositionalEncoding(nn.Module):
 
         pe = torch.zeros(max_len, d_model)
 
-        position = torch.arange(
-            0,
-            max_len
-        ).unsqueeze(1)
+        position = torch.arange(max_len).unsqueeze(1)
 
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2)
-            * (-torch.log(torch.tensor(10000.0)) / d_model)
-        )
+        even_dims = torch.arange(0, d_model, 2)
 
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        div_term = 1 / (10000 ** (even_dims / d_model))
+
+        angle = position * div_term
+
+        # Apply sin to even dimensions
+        pe[:, 0::2] = torch.sin(angle)
+
+        # Apply cos to odd dimensions
+        pe[:, 1::2] = torch.cos(angle)
 
         pe = pe.unsqueeze(0)
 
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
+        # x shape:
+        # (batch_size, seq_len, d_model)
+        seq_len = x.size(1)
+
+        # Add positional encoding
+        x = x + self.pe[:, :seq_len]
+
+        return x
 
 class TemporalEncoder(nn.Module):
 

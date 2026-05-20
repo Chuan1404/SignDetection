@@ -1,5 +1,3 @@
-from pandas.core.reshape import reshape
-
 from config import ROOT
 
 from src.data.STL_dataset import SLTDataset
@@ -17,21 +15,15 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 
-# =========================================================
-# CONFIG
-# =========================================================
-
 DATA_PATH = rf"{ROOT}\datasets\processed\features"
-
 CSV_PATH = rf"{ROOT}\datasets\annotations\how2sign_train.csv"
-
 SAVE_DIR = rf"{ROOT}\models"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-BATCH_SIZE = 2
+BATCH_SIZE = 16
 EPOCHS = 10
 LR = 1e-4
 
@@ -45,7 +37,9 @@ def align(left, right):
 
     left = left[:, :T]
     right = right[:, :T]
+
     return left, right
+
 
 def collate_fn(batch):
 
@@ -71,15 +65,9 @@ def collate_fn(batch):
 
     return lefts, rights, texts
 
-
-
 df = pd.read_csv(CSV_PATH, sep="\t")
 
-# use 10% first
-# df = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
-
-
-vocab = Vocabulary()
+vocab = Vocabulary(min_freq=1)
 
 for s in tqdm(df["SENTENCE"].tolist()):
 
@@ -87,9 +75,6 @@ for s in tqdm(df["SENTENCE"].tolist()):
         s.lower().split()
     )
 
-# =========================================================
-# DATASET
-# =========================================================
 
 dataset = SLTDataset(DATA_PATH)
 
@@ -99,10 +84,6 @@ loader = DataLoader(
     shuffle=True,
     collate_fn=collate_fn
 )
-
-# =========================================================
-# MODEL
-# =========================================================
 
 model = SLTModel(
     vocab_size=len(vocab.word2idx)
@@ -117,9 +98,16 @@ criterion = nn.CrossEntropyLoss(
     ignore_index=PAD_IDX
 )
 
+ctc_criterion = nn.CTCLoss(
+    blank=PAD_IDX,
+    zero_infinity=True
+)
+
 print("VOCAB SIZE:", len(vocab.word2idx))
 
+
 def train_one_epoch():
+
     model.train()
 
     total_loss = 0
@@ -129,29 +117,64 @@ def train_one_epoch():
         left, right = align(left, right)
 
         left = left.to(DEVICE)
-
         right = right.to(DEVICE)
-
         tgt = tgt.to(DEVICE)
 
         inp = tgt[:, :-1]
-
         label = tgt[:, 1:]
 
-        out = model(
+        out, ctc_out = model(
             left,
             right,
             inp
         )
 
-        loss = criterion(
+        seq_loss = criterion(
             out.reshape(-1, out.size(-1)),
             label.reshape(-1)
         )
 
+        ctc_out = ctc_out.log_softmax(-1)
+
+        ctc_out = ctc_out.permute(1, 0, 2)
+
+        input_lengths = torch.full(
+            (left.size(0),),
+            ctc_out.size(0),
+            dtype=torch.long
+        ).to(DEVICE)
+
+        target_lengths = (
+            label != PAD_IDX
+        ).sum(dim=1)
+
+        targets = []
+
+        for i in range(label.size(0)):
+
+            targets.append(
+                label[i][label[i] != PAD_IDX]
+            )
+
+        targets = torch.cat(targets)
+
+        ctc_loss = ctc_criterion(
+            ctc_out,
+            targets,
+            input_lengths,
+            target_lengths
+        )
+
+        loss = seq_loss + 0.3 * ctc_loss
+
         optimizer.zero_grad()
 
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            1.0
+        )
 
         optimizer.step()
 
