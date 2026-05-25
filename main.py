@@ -1,10 +1,15 @@
+import os
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 from config import ROOT
 
 from src.data.STL_dataset import SLTDataset
 from src.models.SLT_model import SLTModel
 from src.utils.vocabulary import Vocabulary
 
-import os
+import gc
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -14,7 +19,6 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
-
 DATA_PATH = rf"{ROOT}\datasets\processed\features"
 CSV_PATH = rf"{ROOT}\datasets\annotations\how2sign_train.csv"
 SAVE_DIR = rf"{ROOT}\models"
@@ -23,8 +27,8 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-BATCH_SIZE = 16
-EPOCHS = 10
+BATCH_SIZE = 8
+EPOCHS = 100
 LR = 1e-4
 
 PAD_IDX = 0
@@ -33,6 +37,7 @@ EOS_IDX = 2
 
 
 def align(left, right):
+
     T = min(left.shape[1], right.shape[1])
 
     left = left[:, :T]
@@ -65,6 +70,7 @@ def collate_fn(batch):
 
     return lefts, rights, texts
 
+
 df = pd.read_csv(CSV_PATH, sep="\t")
 
 vocab = Vocabulary(min_freq=1)
@@ -75,14 +81,70 @@ for s in tqdm(df["SENTENCE"].tolist()):
         s.lower().split()
     )
 
+print("VOCAB SIZE:", len(vocab.word2idx))
+
+
+# =========================
+# DATASET SPLIT 80/10/10
+# ORDERED (NOT RANDOM)
+# =========================
 
 dataset = SLTDataset(DATA_PATH)
 
-loader = DataLoader(
+total_size = len(dataset)
+
+train_size = int(0.8 * total_size)
+val_size = int(0.1 * total_size)
+
+train_dataset = torch.utils.data.Subset(
     dataset,
+    range(0, train_size)
+)
+
+val_dataset = torch.utils.data.Subset(
+    dataset,
+    range(train_size, train_size + val_size)
+)
+
+test_dataset = torch.utils.data.Subset(
+    dataset,
+    range(train_size + val_size, total_size)
+)
+
+print(f"TRAIN SIZE: {len(train_dataset)}")
+print(f"VAL SIZE: {len(val_dataset)}")
+print(f"TEST SIZE: {len(test_dataset)}")
+
+
+# =========================
+# DATALOADERS
+# =========================
+
+train_loader = DataLoader(
+    train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    collate_fn=collate_fn
+    collate_fn=collate_fn,
+    pin_memory=True,
+    num_workers=0
+)
+
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    collate_fn=collate_fn,
+    pin_memory=True,
+    num_workers=0
+)
+
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    collate_fn=collate_fn,
+    pin_memory=True,
+    num_workers=0
 )
 
 model = SLTModel(
@@ -103,25 +165,21 @@ ctc_criterion = nn.CTCLoss(
     zero_infinity=True
 )
 
-print("VOCAB SIZE:", len(vocab.word2idx))
+scaler = torch.cuda.amp.GradScaler()
 
 
-def train_one_epoch():
+def compute_loss(left, right, tgt):
 
-    model.train()
+    left, right = align(left, right)
 
-    total_loss = 0
+    left = left.to(DEVICE, non_blocking=True)
+    right = right.to(DEVICE, non_blocking=True)
+    tgt = tgt.to(DEVICE, non_blocking=True)
 
-    for left, right, tgt in tqdm(loader):
+    inp = tgt[:, :-1]
+    label = tgt[:, 1:]
 
-        left, right = align(left, right)
-
-        left = left.to(DEVICE)
-        right = right.to(DEVICE)
-        tgt = tgt.to(DEVICE)
-
-        inp = tgt[:, :-1]
-        label = tgt[:, 1:]
+    with torch.cuda.amp.autocast():
 
         out, ctc_out = model(
             left,
@@ -141,8 +199,9 @@ def train_one_epoch():
         input_lengths = torch.full(
             (left.size(0),),
             ctc_out.size(0),
-            dtype=torch.long
-        ).to(DEVICE)
+            dtype=torch.long,
+            device=DEVICE
+        )
 
         target_lengths = (
             label != PAD_IDX
@@ -167,54 +226,126 @@ def train_one_epoch():
 
         loss = seq_loss + 0.3 * ctc_loss
 
-        optimizer.zero_grad()
+    return loss, seq_loss, ctc_loss
 
-        loss.backward()
+
+def train_one_epoch():
+
+    model.train()
+
+    total_loss = 0
+
+    progress_bar = tqdm(train_loader)
+
+    for left, right, tgt in progress_bar:
+
+        optimizer.zero_grad(set_to_none=True)
+
+        loss, seq_loss, ctc_loss = compute_loss(
+            left,
+            right,
+            tgt
+        )
+
+        scaler.scale(loss).backward()
+
+        scaler.unscale_(optimizer)
 
         torch.nn.utils.clip_grad_norm_(
             model.parameters(),
             1.0
         )
 
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item()
 
-    return total_loss / len(loader)
+        progress_bar.set_postfix({
+            "loss": f"{loss.item():.4f}",
+            "seq": f"{seq_loss.item():.4f}",
+            "ctc": f"{ctc_loss.item():.4f}"
+        })
+
+        del loss
+        del seq_loss
+        del ctc_loss
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    return total_loss / len(train_loader)
+
+
+def validate():
+
+    model.eval()
+
+    total_loss = 0
+
+    with torch.no_grad():
+
+        for left, right, tgt in val_loader:
+
+            loss, _, _ = compute_loss(
+                left,
+                right,
+                tgt
+            )
+
+            total_loss += loss.item()
+
+            del loss
+
+    return total_loss / len(val_loader)
+
+
+def test():
+
+    model.eval()
+
+    total_loss = 0
+
+    with torch.no_grad():
+
+        for left, right, tgt in test_loader:
+
+            loss, _, _ = compute_loss(
+                left,
+                right,
+                tgt
+            )
+
+            total_loss += loss.item()
+
+            del loss
+
+    return total_loss / len(test_loader)
 
 
 best_loss = float("inf")
 
 for epoch in range(EPOCHS):
 
-    loss = train_one_epoch()
+    print(f"\nEpoch {epoch+1}/{EPOCHS}")
 
-    print(f"Epoch {epoch+1}/{EPOCHS}")
-    print(f"Loss: {loss:.4f}")
+    train_loss = train_one_epoch()
 
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "loss": loss,
-        },
-        os.path.join(
-            SAVE_DIR,
-            "last_model.pt"
-        )
-    )
+    val_loss = validate()
 
-    if loss < best_loss:
+    print(f"Train Loss: {train_loss:.4f}")
+    print(f"Val Loss: {val_loss:.4f}")
 
-        best_loss = loss
+    if val_loss < best_loss:
+
+        best_loss = val_loss
 
         torch.save(
             {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "loss": loss,
+                "val_loss": val_loss,
             },
             os.path.join(
                 SAVE_DIR,
@@ -223,3 +354,15 @@ for epoch in range(EPOCHS):
         )
 
         print("Best model saved!")
+
+    torch.cuda.empty_cache()
+    gc.collect()
+
+
+# =========================
+# FINAL TEST
+# =========================
+
+test_loss = test()
+
+print(f"\nFINAL TEST LOSS: {test_loss:.4f}")

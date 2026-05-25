@@ -3,40 +3,56 @@ from torch import nn
 from torchvision import models
 
 class FrameEncoder(nn.Module):
+    """
+    I3D-style video encoder (3D CNN backbone)
+    Input : (B, T, C, H, W)
+    Output: (B, T, embed_dim)
+    """
 
     def __init__(self, embed_dim=512):
-
         super().__init__()
 
-        backbone = models.resnet18(pretrained=True)
+        # -------------------------
+        # 3D CNN backbone (I3D-like)
+        # -------------------------
+        backbone = models.video.r3d_18(pretrained=True)
 
         self.backbone = nn.Sequential(
-            *list(backbone.children())[:-1]
+            backbone.stem,
+            backbone.layer1,
+            backbone.layer2,
+            backbone.layer3,
+            backbone.layer4
         )
 
-        self.projection = nn.Linear(
-            512,
-            embed_dim
-        )
+        # projection head
+        self.projection = nn.Linear(512, embed_dim)
 
     def forward(self, x):
-
         """
-        x:
-        (B,T,C,H,W)
+        x: (B, T, C, H, W)
         """
 
         B, T, C, H, W = x.shape
 
-        x = x.reshape(B * T, C, H, W)
+        # -------------------------
+        # convert to 3D CNN format
+        # -------------------------
+        x = x.permute(0, 2, 1, 3, 4)
+        # (B, C, T, H, W)
 
         features = self.backbone(x)
+        # output shape: (B, 512, T', H', W')
 
-        features = features.reshape(B * T, -1)
+        # global average pooling
+        features = features.mean(dim=[3, 4])  # spatial avg
+        # (B, 512, T')
+
+        features = features.permute(0, 2, 1)
+        # (B, T', 512)
 
         features = self.projection(features)
-
-        features = features.reshape(B, T, -1)
+        # (B, T', embed_dim)
 
         return features
 

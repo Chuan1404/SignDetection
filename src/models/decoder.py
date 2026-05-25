@@ -89,38 +89,22 @@ class TextDecoder(nn.Module):
                 [B, S]
         """
 
-        # -------------------------
-        # Padding mask
-        # True = ignore
-        # -------------------------
         tgt_padding_mask = (tgt_ids == PAD_IDX)
 
-        # -------------------------
-        # Embedding
-        # -------------------------
         tgt = self.embedding(tgt_ids)
 
         # Transformer embedding scaling
         tgt = tgt * math.sqrt(self.embed_dim)
 
-        # -------------------------
-        # Positional encoding
-        # -------------------------
         tgt = self.position(tgt)
 
         tgt = self.dropout(tgt)
 
-        # -------------------------
-        # Causal mask
-        # -------------------------
         tgt_mask = self.generate_causal_mask(
             size=tgt.size(1),
             device=tgt.device
         )
 
-        # -------------------------
-        # Transformer decoder
-        # -------------------------
         out = self.decoder(
             tgt=tgt,
             memory=memory,
