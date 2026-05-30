@@ -60,10 +60,10 @@ class HandDetection:
 
         return detection_result
 
-    def detect_video(self, frame):
+    def detect_video(self, frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
 
-        detection_result = self.video_detector.detect_for_video(mp_image, int(time.time() * 1000))
+        detection_result = self.video_detector.detect_for_video(mp_image, timestamp_ms)
 
         return detection_result
 

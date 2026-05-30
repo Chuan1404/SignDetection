@@ -16,3 +16,5 @@ BASE_I3D_TEST = os.path.join(ROOT, "datasets/raw/how2sign/i3d_features_how2sign/
 BASE_MP_TEST = os.path.join(ROOT, "datasets/raw/how2sign/mediapipe_features_how2sign/mediapipe_features/test")
 
 HOW2SIGN_RAW_DATA = os.path.join(ROOT, "datasets/raw/how2sign_raw")
+
+MIN_FREQ = 1
