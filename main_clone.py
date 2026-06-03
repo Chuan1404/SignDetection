@@ -2,7 +2,8 @@ import os
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
+from src.data.hand_landmarks import HandLandmarksDataset
+from src.models.SLT_model import SignLanguageTranslator
 import torch
 
 import gc
@@ -15,11 +16,6 @@ from torch.nn.utils.rnn import pad_sequence
 
 from config import ROOT
 
-
-
-# =====================================================
-# CONFIG
-# =====================================================
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -38,23 +34,33 @@ SAVE_DIR = os.path.join(
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 BATCH_SIZE = 8
-EPOCHS = 50
+EPOCHS = 10
 LR = 1e-4
-
-
-# =====================================================
-# TOKENIZER
-# =====================================================
 
 tokenizer = AutoTokenizer.from_pretrained(
     "google/mt5-small",
     use_fast=False
 )
 
+dataset = HandLandmarksDataset(
+    FEATURE_DIR,
+    tokenizer
+)
 
-# =====================================================
-# COLLATE
-# =====================================================
+total_size = len(dataset)
+
+train_size = int(total_size * 0.8)
+val_size = int(total_size * 0.1)
+test_size = total_size - train_size - val_size
+
+train_dataset, val_dataset, test_dataset = random_split(
+    dataset,
+    [train_size, val_size, test_size]
+)
+
+print("TRAIN:", len(train_dataset))
+print("VAL:", len(val_dataset))
+print("TEST:", len(test_dataset))
 
 def collate_fn(batch):
 
@@ -62,7 +68,6 @@ def collate_fn(batch):
     texts = []
 
     for feature, text in batch:
-
         features.append(feature)
         texts.append(text)
 
@@ -85,35 +90,27 @@ def collate_fn(batch):
 
     return features, labels
 
+def compute_loss(hand_features,labels):
+    hand_features = hand_features.to(
+        DEVICE,
+        non_blocking=True
+    )
 
-# =====================================================
-# DATASET
-# =====================================================
+    labels = labels.to(
+        DEVICE,
+        non_blocking=True
+    )
 
-dataset = HandLandmarksDataset(
-    FEATURE_DIR,
-    tokenizer
-)
+    with torch.cuda.amp.autocast():
 
-total_size = len(dataset)
+        outputs = model(
+            hand_features,
+            labels=labels
+        )
 
-train_size = int(total_size * 0.8)
-val_size = int(total_size * 0.1)
-test_size = total_size - train_size - val_size
+        loss = outputs.loss
 
-train_dataset, val_dataset, test_dataset = random_split(
-    dataset,
-    [train_size, val_size, test_size]
-)
-
-print("TRAIN:", len(train_dataset))
-print("VAL:", len(val_dataset))
-print("TEST:", len(test_dataset))
-
-
-# =====================================================
-# DATALOADER
-# =====================================================
+    return loss
 
 train_loader = DataLoader(
     train_dataset,
@@ -142,11 +139,6 @@ test_loader = DataLoader(
     num_workers=0
 )
 
-
-# =====================================================
-# MODEL
-# =====================================================
-
 model = SignLanguageTranslator(
     input_dim=126
 ).to(DEVICE)
@@ -158,20 +150,8 @@ optimizer = torch.optim.AdamW(
 
 scaler = torch.cuda.amp.GradScaler()
 
-
-# =====================================================
-# LOSS
-# =====================================================
-
-def compute_loss(
-    hand_features,
-    labels
-):
-
-    hand_features = hand_features.to(
-        DEVICE,
-        non_blocking=True
-    )
+def compute_loss(hand_features, labels):
+    hand_features = hand_features.to(DEVICE, non_blocking=True)
 
     labels = labels.to(
         DEVICE,
@@ -179,7 +159,6 @@ def compute_loss(
     )
 
     with torch.cuda.amp.autocast():
-
         outputs = model(
             hand_features,
             labels=labels
@@ -188,11 +167,6 @@ def compute_loss(
         loss = outputs.loss
 
     return loss
-
-
-# =====================================================
-# TRAIN
-# =====================================================
 
 def train_one_epoch():
 
@@ -206,7 +180,6 @@ def train_one_epoch():
     )
 
     for hand_features, labels in pbar:
-
         optimizer.zero_grad(
             set_to_none=True
         )
@@ -236,11 +209,6 @@ def train_one_epoch():
 
     return total_loss / len(train_loader)
 
-
-# =====================================================
-# VALIDATE
-# =====================================================
-
 def validate():
 
     model.eval()
@@ -259,12 +227,6 @@ def validate():
             total_loss += loss.item()
 
     return total_loss / len(val_loader)
-
-
-
-# =====================================================
-# TRAIN LOOP
-# =====================================================
 
 best_loss = float("inf")
 

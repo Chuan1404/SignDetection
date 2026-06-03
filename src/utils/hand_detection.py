@@ -17,20 +17,21 @@ FONT_THICKNESS = 1
 HANDEDNESS_TEXT_COLOR = (88, 205, 54)
 
 FINGERS = {
-    "Thumb": [0, 1, 2, 3, 4],
-    "Index": [0, 5, 6, 7, 8],
-    "Middle": [0, 9, 10, 11, 12],
-    "Ring": [0, 13, 14, 15, 16],
-    "Pinky": [0, 17, 18, 19, 20]
+    "Thumb": [1, 2, 3, 4],
+    "Index": [5, 6, 7, 8],
+    "Middle": [9, 10, 11, 12],
+    "Ring": [13, 14, 15, 16],
+    "Pinky": [17, 18, 19, 20],
+    "Wrist": [0]
 }
 
-# Assign colors (BGR) to each finger
 FINGER_COLORS = {
     "Thumb": (0, 0, 255),   # Red
     "Index": (0, 255, 0),   # Green
     "Middle": (255, 0, 0),  # Blue
     "Ring": (0, 255, 255),  # Yellow
-    "Pinky": (255, 0, 255)  # Magenta
+    "Pinky": (255, 0, 255),  # Magenta
+    "Wrist": (0, 0, 0)
 }
 class HandDetection:
     def __init__(self):
@@ -60,10 +61,10 @@ class HandDetection:
 
         return detection_result
 
-    def detect_video(self, frame):
+    def detect_video(self, frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
 
-        detection_result = self.video_detector.detect_for_video(mp_image, int(time.time() * 1000))
+        detection_result = self.video_detector.detect_for_video(mp_image, timestamp_ms)
 
         return detection_result
 
@@ -110,73 +111,44 @@ class HandDetection:
 
         return hand_crops
 
-    def draw_landmarks_on_image(self, rgb_image, detection_result, predicted_label=None):
+    def draw_landmarks_on_image(self, rgb_image, detection_result):
         hand_landmarks_list = detection_result.hand_landmarks
         handedness_list = detection_result.handedness
         annotated_image = np.copy(rgb_image)
         height, width, _ = annotated_image.shape
 
-        # Scale parameters with image size
-        point_radius = max(2, int(min(width, height) * 0.01))
-        line_thickness = max(1, int(min(width, height) * 0.002))
-
         for idx in range(len(hand_landmarks_list)):
             hand_landmarks = hand_landmarks_list[idx]
-            handedness = handedness_list[idx]
 
-            # Convert normalized landmarks to pixel coordinates
             landmark_points = [
                 (int(lm.x * width), int(lm.y * height)) for lm in hand_landmarks
             ]
 
+
             # Draw connections per finger with assigned colors
             for finger_name, indices in FINGERS.items():
                 color = FINGER_COLORS[finger_name]
-                for i in range(len(indices)-1):
-                    start_idx = indices[i]
-                    end_idx = indices[i+1]
+
+                start_idx = 0
+                for i in range(len(indices)):
+                    end_idx = indices[i]
                     cv2.line(
                         annotated_image,
                         landmark_points[start_idx],
                         landmark_points[end_idx],
                         color,
-                        line_thickness
+                        1
                     )
 
+                    start_idx = indices[i]
+
             # Draw all landmarks as small circles
-            for x, y in landmark_points:
-                cv2.circle(annotated_image, (x, y), point_radius, (0, 255, 0), -1)
+            for finger_name, indices in FINGERS.items():
+                color = FINGER_COLORS[finger_name]
 
-            # Draw handedness text
-            x_coordinates = [lm.x for lm in hand_landmarks]
-            y_coordinates = [lm.y for lm in hand_landmarks]
-            text_x = int(min(x_coordinates) * width)
-            text_y = int(min(y_coordinates) * height) - MARGIN
-            # cv2.putText(
-            #     annotated_image,
-            #     # f"{handedness[0].category_name}",
-            #     f"{handedness[0].category_name}",
-            #     (text_x, text_y),
-            #     cv2.FONT_HERSHEY_DUPLEX,
-            #     FONT_SIZE,
-            #     HANDEDNESS_TEXT_COLOR,
-            #     FONT_THICKNESS,
-            #     cv2.LINE_AA
-            # )
-
-            # Optional: predicted label
-            if predicted_label is not None:
-                cv2.putText(
-                    annotated_image,
-                    f"Letter: {predicted_label}",
-                    (50, 50),
-                    cv2.FONT_HERSHEY_DUPLEX,
-                    FONT_SIZE,
-                    (0, 0, 255),
-                    line_thickness,
-                    cv2.LINE_AA
-                )
-
+                for i in indices:
+                    x, y = landmark_points[i]
+                    cv2.circle(annotated_image, (x, y), 2, color, -1)
         return annotated_image
 
     def close(self):
