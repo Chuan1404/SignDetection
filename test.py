@@ -5,13 +5,13 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 
 from nltk.translate.bleu_score import corpus_bleu
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from transformers import AutoTokenizer
 from functools import partial
 
 from config import ROOT
 from src.data.hand_landmarks import HandLandmarksDataset
-from src.models.SLT_model import SignLanguageTranslator
+from src.models.SLT_model import SignLanguageTranslator, SignLanguageTranslatorV1
 
 from main import collate_fn
 
@@ -27,7 +27,7 @@ FEATURE_DIR = os.path.join(
 MODEL_PATH = os.path.join(
     ROOT,
     "models",
-    "best_model.pt"
+    "best.pt"
 )
 
 BATCH_SIZE = 8
@@ -44,19 +44,37 @@ tokenizer = AutoTokenizer.from_pretrained(
 
 dataset = HandLandmarksDataset(
     FEATURE_DIR,
-    tokenizer,
-    MAX_DATASET_LENGTH
+    tokenizer
 )
 
 total_size = len(dataset)
 
 train_size = int(total_size * 0.8)
 val_size = int(total_size * 0.1)
-test_size = total_size - train_size - val_size
 
-_, _, test_dataset = random_split(
+train_dataset = Subset(
     dataset,
-    [train_size, val_size, test_size]
+    range(0, train_size)
+)
+
+val_dataset = Subset(
+    dataset,
+    range(train_size, train_size + val_size)
+)
+
+test_dataset = Subset(
+    dataset,
+    range(train_size + val_size, total_size)
+)
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    collate_fn=partial(
+        collate_fn,
+        tokenizer=tokenizer
+    )
 )
 
 test_loader = DataLoader(
@@ -73,9 +91,9 @@ test_loader = DataLoader(
 # -----------------------------
 # LOAD MODEL
 # -----------------------------
-sample_feature, _, _ = dataset[0]
+sample_feature, _ = dataset[0]
 
-model = SignLanguageTranslator(
+model = SignLanguageTranslatorV1(
     input_dim=sample_feature.shape[-1]
 ).to(DEVICE)
 
@@ -85,7 +103,7 @@ checkpoint = torch.load(
 )
 
 model.load_state_dict(
-    checkpoint["model_state_dict"]
+    checkpoint["model"]
 )
 
 model.eval()
@@ -101,15 +119,15 @@ print("\nRunning Test Evaluation...\n")
 
 with torch.no_grad():
 
-    for hand_features, labels, video_masks in test_loader:
+    for hand_features, labels, video_mask in train_loader:
 
         hand_features = hand_features.to(DEVICE)
-        video_masks = video_masks.to(DEVICE)
+        video_mask = video_mask.to(DEVICE)
 
         # forward generate
         generated_ids = model.generate(
             hand_features,
-            attention_mask=video_masks,
+            video_mask=video_mask,
             max_length=64
         )
 
@@ -137,9 +155,6 @@ with torch.no_grad():
             references.append([ref.split()])
 
 
-# -----------------------------
-# BLEU 1-4 (ROUGH METRICS)
-# -----------------------------
 bleu1 = corpus_bleu(
     references,
     hypotheses,
