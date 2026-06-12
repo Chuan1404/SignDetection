@@ -1,5 +1,7 @@
 import os
 
+from rouge_score import rouge_scorer
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import torch
@@ -21,22 +23,21 @@ FEATURE_DIR = os.path.join(
     ROOT,
     "datasets",
     "processed",
-    "mediapipe"
+    "mediapipe",
+    "hands"
 )
 
 MODEL_PATH = os.path.join(
     ROOT,
     "models",
-    "best.pt"
+    "best-06-05.pt"
 )
 
 BATCH_SIZE = 8
 MAX_DATASET_LENGTH = 1000
 
 
-# -----------------------------
-# LOAD DATASET + TOKENIZER
-# -----------------------------
+
 tokenizer = AutoTokenizer.from_pretrained(
     "google/mt5-small",
     use_fast=False
@@ -103,7 +104,8 @@ checkpoint = torch.load(
 )
 
 model.load_state_dict(
-    checkpoint["model"]
+    checkpoint["model"],
+    strict=False
 )
 
 model.eval()
@@ -115,16 +117,22 @@ model.eval()
 references = []
 hypotheses = []
 
+rouge_scorer_obj = rouge_scorer.RougeScorer(
+    ["rougeL"],
+    use_stemmer=True
+)
+
+rougeL_scores = []
+
 print("\nRunning Test Evaluation...\n")
 
 with torch.no_grad():
 
-    for hand_features, labels, video_mask in train_loader:
+    for hand_features, labels, video_mask in test_loader:
 
         hand_features = hand_features.to(DEVICE)
         video_mask = video_mask.to(DEVICE)
 
-        # forward generate
         generated_ids = model.generate(
             hand_features,
             video_mask=video_mask,
@@ -136,7 +144,6 @@ with torch.no_grad():
             skip_special_tokens=True
         )
 
-        # decode ground truth
         labels = labels.clone()
         labels[labels == -100] = tokenizer.pad_token_id
 
@@ -147,14 +154,30 @@ with torch.no_grad():
 
         for pred, ref in zip(preds, refs):
 
+            pred_norm = pred.strip().lower()
+            ref_norm = ref.strip().lower()
+
             print("=" * 60)
             print("GT   :", ref)
             print("PRED :", pred)
 
-            hypotheses.append(pred.split())
-            references.append([ref.split()])
+            # BLEU
+            hypotheses.append(pred_norm.split())
+            references.append([ref_norm.split()])
 
+            # ROUGE-L
+            rouge_score = rouge_scorer_obj.score(
+                ref_norm,
+                pred_norm
+            )
 
+            rougeL_scores.append(
+                rouge_score["rougeL"].fmeasure
+            )
+
+# -----------------------------
+# BLEU
+# -----------------------------
 bleu1 = corpus_bleu(
     references,
     hypotheses,
@@ -179,12 +202,22 @@ bleu4 = corpus_bleu(
     weights=(0.25, 0.25, 0.25, 0.25)
 )
 
+# -----------------------------
+# ROUGE-L
+# -----------------------------
+rougeL = sum(rougeL_scores) / len(rougeL_scores)
 
+# -----------------------------
+# RESULT
+# -----------------------------
 print("\n" + "=" * 60)
-print("ROUGH EVALUATION RESULT")
+print("EVALUATION RESULT")
 print("=" * 60)
 
-print(f"BLEU-1 : {bleu1:.4f}")
-print(f"BLEU-2 : {bleu2:.4f}")
-print(f"BLEU-3 : {bleu3:.4f}")
-print(f"BLEU-4 : {bleu4:.4f}")
+print(f"BLEU-1  : {bleu1:.4f}")
+print(f"BLEU-2  : {bleu2:.4f}")
+print(f"BLEU-3  : {bleu3:.4f}")
+print(f"BLEU-4  : {bleu4:.4f}")
+print(f"ROUGE-L : {rougeL:.4f}")
+
+print("=" * 60)

@@ -4,7 +4,7 @@ import math
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000000, dropout=0.1):
+    def __init__(self, d_model, max_len=5000, dropout=0.1):
         super().__init__()
 
         self.dropout = nn.Dropout(dropout)
@@ -26,6 +26,5 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         T = x.size(1)
-
-        x = x + self.pe[:, :T, :]
+        x = x + self.pe[:, :T, :].to(x.device)
         return self.dropout(x)

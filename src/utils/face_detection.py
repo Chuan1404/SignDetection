@@ -3,30 +3,37 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import mediapipe as mp
 from matplotlib import pyplot as plt
-from mediapipe.tasks.python.vision.core.vision_task_running_mode import VisionTaskRunningMode
-import time
+from mediapipe.tasks.python.vision.drawing_utils import DrawingSpec
 
 mp_drawing_styles = vision.drawing_styles
 mp_drawing_utils = vision.drawing_utils
 
 class FaceDetection:
     def __init__(self):
-        base_options = python.BaseOptions(model_asset_path=r'/pretrained/face_landmarker.task')
+        base_options = python.BaseOptions(model_asset_path=r'../../pretrained/face_landmarker.task')
         options = vision.FaceLandmarkerOptions(
             base_options=base_options,
             num_faces=1,
+            running_mode=vision.RunningMode.VIDEO,
+            min_face_detection_confidence=0.3,
             output_face_blendshapes=True,
-            output_facial_transformation_matrixes=True
+            output_facial_transformation_matrixes=True,
             )
         self.face_detector = vision.FaceLandmarker.create_from_options(options)
 
-    def detect_face(self, frame):
+    def detect_video(self, frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-        detection_result = self.face_detector.detect(mp_image)
-        print(detection_result)
+        detection_result = self.face_detector.detect_for_video(mp_image, timestamp_ms=timestamp_ms)
+
         return detection_result
 
     def draw_landmarks_on_image(self, rgb_image, detection_result):
+        small_landmark_style = DrawingSpec(
+            color=(0, 255, 0),
+            thickness=1,
+            circle_radius=1  # smaller points
+        )
+
         face_landmarks_list = detection_result.face_landmarks
         annotated_image = np.copy(rgb_image)
 

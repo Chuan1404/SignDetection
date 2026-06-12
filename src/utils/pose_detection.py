@@ -8,15 +8,15 @@ mp_drawing_utils = vision.drawing_utils
 
 class PoseDetection:
     def __init__(self):
-        base_options = python.BaseOptions(model_asset_path=r'/pretrained/pose_landmarker_heavy.task')
+        base_options = python.BaseOptions(model_asset_path=r'../../pretrained/pose_landmarker_heavy.task')
         options = vision.PoseLandmarkerOptions(
-            base_options=base_options,
-            output_segmentation_masks=True)
+            running_mode=vision.RunningMode.VIDEO,
+            base_options=base_options)
         self.pose_detector = vision.PoseLandmarker.create_from_options(options)
 
-    def detect_pose(self, frame):
+    def detect_video(self, frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-        detection_result = self.pose_detector.detect(mp_image)
+        detection_result = self.pose_detector.detect_for_video(mp_image, timestamp_ms)
 
         return detection_result
 
@@ -25,7 +25,10 @@ class PoseDetection:
         annotated_image = np.copy(rgb_image)
 
         pose_landmark_style = mp_drawing_styles.get_default_pose_landmarks_style()
-        pose_connection_style = mp_drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=2)
+        # for landmark_style in pose_landmark_style.values():
+        #     landmark_style.thickness = 1
+        #     landmark_style.circle_radius = 1
+        pose_connection_style = mp_drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=1)
 
         for pose_landmarks in pose_landmarks_list:
             mp_drawing_utils.draw_landmarks(
@@ -33,6 +36,6 @@ class PoseDetection:
                 landmark_list=pose_landmarks,
                 connections=vision.PoseLandmarksConnections.POSE_LANDMARKS,
                 landmark_drawing_spec=pose_landmark_style,
-                connection_drawing_spec=pose_connection_style)
+                connection_drawing_spec=pose_connection_style,)
 
         return annotated_image

@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Subset
 from functools import partial
 
 from src.data.hand_landmarks import HandLandmarksDataset
-from src.models.SLT_model import SignLanguageTranslator, SignLanguageTranslatorV1
+from src.models.SLT_model import SignLanguageTranslatorV1, SignLanguageTranslatorV2
 from config import ROOT
 
 
@@ -191,7 +191,7 @@ def main():
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
                 "val_loss": val_loss
-            }, os.path.join(SAVE_DIR, "best.pt"))
+            }, os.path.join(SAVE_DIR, "best-06-05.pt"))
 
             print("Saved best model!")
 

@@ -66,7 +66,7 @@ class HandLandmarksDataset(Dataset):
 
         text_ids = tokens["input_ids"].squeeze(0)
 
-        # hand_features = self.normalize_features(hand_features)
+        hand_features = self.normalize_features(hand_features)
 
         return hand_features, text_ids
 
@@ -109,20 +109,15 @@ class HandLandmarksDataset(Dataset):
 
         x = hand_features.reshape(T, 2, 21, 3)
 
-        # --------------------------------------------------
-        # 1. GLOBAL CENTERING (NOT per-frame)
-        # --------------------------------------------------
-        # use first frame wrist as anchor (better than per-frame)
+        # use first frame as root
         right_wrist_0 = x[0, 0, 0, :].clone()
         left_wrist_0 = x[0, 1, 0, :].clone()
 
         x[:, 0] = x[:, 0] - right_wrist_0
         x[:, 1] = x[:, 1] - left_wrist_0
 
-        # --------------------------------------------------
-        # 2. GLOBAL SCALE NORMALIZATION
-        # --------------------------------------------------
-        # compute scale over entire sequence (stable)
+
+
         scale_right = torch.norm(x[:, 0], dim=-1).mean()
         scale_left = torch.norm(x[:, 1], dim=-1).mean()
 
@@ -130,18 +125,13 @@ class HandLandmarksDataset(Dataset):
 
         x = x / scale
 
-        # --------------------------------------------------
-        # 3. OPTIONAL: velocity enhancement (VERY useful for SLT)
-        # --------------------------------------------------
-        velocity = torch.zeros_like(x)
-        velocity[1:] = x[1:] - x[:-1]
+
+        # velocity = torch.zeros_like(x)
+        # velocity[1:] = x[1:] - x[:-1]
 
         # concat position + velocity (helps semantic learning)
-        x = torch.cat([x, velocity], dim=-1)  # (T,2,21,6)
+        # x = torch.cat([x, velocity], dim=-1)  # (T,2,21,6)
 
-        # --------------------------------------------------
-        # 4. flatten back
-        # --------------------------------------------------
         x = x.reshape(T, -1)
 
         return x
