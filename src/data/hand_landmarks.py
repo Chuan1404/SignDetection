@@ -5,15 +5,16 @@ import torch
 
 class HandLandmarksDataset(Dataset):
 
-    def __init__(self, feature_dir, vocabulary):
+    def __init__(self, feature_dir, vocabulary, fusion_component):
         self.vocabulary = vocabulary
         self.feature_dir = feature_dir
+        self.fusion_component = fusion_component
 
         self.samples = []
 
         for index, video_name in enumerate(os.listdir(feature_dir)):
-            # if index > 10000:
-            #     break
+            if index > 1000:
+                break
             video_dir = os.path.join(
                 feature_dir,
                 video_name
@@ -22,24 +23,24 @@ class HandLandmarksDataset(Dataset):
             if not os.path.isdir(video_dir):
                 continue
 
-            hand_path = os.path.join(
-                video_dir,
-                "hand_features.npy"
-            )
+            left_hand_path = os.path.join(video_dir, "left_hand.npy")
+            right_hand_path = os.path.join(video_dir, "right_hand.npy")
+            pose_path = os.path.join(video_dir, "pose.npy")
 
-            text_path = os.path.join(
-                video_dir,
-                "text.txt"
-            )
+            text_path = os.path.join(video_dir,"text.txt")
 
             if (
-                os.path.exists(hand_path)
-                and os.path.exists(text_path)
+                os.path.exists(left_hand_path)
+            and os.path.exists(right_hand_path)
+            and os.path.exists(pose_path)
+            and os.path.exists(text_path)
             ):
 
                 self.samples.append({
-                    "hand_features": hand_path,
-                    "text": text_path
+                    "left_hand_path": left_hand_path,
+                    "right_hand_path": right_hand_path,
+                    "pose_path": pose_path,
+                    "text_path": text_path
                 })
 
     def __len__(self):
@@ -49,9 +50,11 @@ class HandLandmarksDataset(Dataset):
 
         item = self.samples[idx]
 
-        hand_features = np.load(item["hand_features"])
+        left_features = np.load(item["left_hand_path"])
+        right_features = np.load(item["right_hand_path"])
+        pose_features = np.load(item["pose_path"])
 
-        with open(item["text"], "r", encoding="utf-8") as f:
+        with open(item["text_path"], "r", encoding="utf-8") as f:
             sentence = f.read().strip()
 
         tokens = self.vocabulary(
@@ -62,13 +65,21 @@ class HandLandmarksDataset(Dataset):
             max_length=64
         )
 
-        hand_features = torch.tensor(hand_features).float()
+        left_features = torch.tensor(left_features).float()
+        right_features = torch.tensor(right_features).float()
+
+        hand_features = torch.concatenate([left_features, right_features], dim=-1)
+        pose_features = torch.tensor(pose_features).float()
 
         text_ids = tokens["input_ids"].squeeze(0)
 
         hand_features = self.normalize_features(hand_features)
 
-        return hand_features, text_ids
+        features = self.fusion_component.fuse(pose_features, hand_features)
+        T = features.shape[0]
+        features = features.reshape(T, -1)
+
+        return features, text_ids
 
     # def normalize_features(self, hand_features):
     #     """

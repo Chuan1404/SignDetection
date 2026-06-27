@@ -88,7 +88,7 @@ def process_video(input_path, output_path,
 
 if __name__ == "__main__":
 
-    SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "how2gisn_resized")
+    SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "how2sign_resized")
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     csv_path = os.path.join(ROOT, r"datasets\annotations\how2sign_train.csv")

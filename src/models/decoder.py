@@ -2,7 +2,7 @@ from torch import nn
 import torch
 import math
 
-from models.positional_encoding import PositionalEncoding
+from src.models.positional_encoding import PositionalEncoding
 
 PAD_IDX = 0
 SOS_IDX = 1

@@ -1,5 +1,7 @@
 import os
 
+from src.utils import fusion_component, FusionComponent
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -18,42 +20,45 @@ from config import ROOT
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 BATCH_SIZE = 8
-EPOCHS = 30
+EPOCHS = 10
 LR = 1e-4
 
 
-FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "mediapipe")
-SAVE_DIR = os.path.join(ROOT, "models")
+FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_how2sign")
+SAVE_DIR = os.path.join(ROOT, "outputs", "models")
 os.makedirs(SAVE_DIR, exist_ok=True)
+
+fusion_component = FusionComponent()
 
 
 def collate_fn(batch, tokenizer):
-
     features, texts = [], []
 
     for feature, text in batch:
-        features.append(feature)
+        features.append(torch.as_tensor(feature, dtype=torch.float32))
         texts.append(text)
 
     real_lengths = [f.shape[0] for f in features]
 
-    features = pad_sequence(features, batch_first=True)
+    features = pad_sequence(features, batch_first=True)  # (B, T_vid, D)
 
     texts = pad_sequence(
         texts,
         batch_first=True,
         padding_value=tokenizer.pad_token_id
-    )
+    )  # (B, T_txt)
 
     video_mask = (
         torch.arange(features.shape[1]).unsqueeze(0)
         < torch.tensor(real_lengths).unsqueeze(1)
     ).long()
 
+    text_mask = (texts != tokenizer.pad_token_id).long()
+
     labels = texts.clone()
     labels[labels == tokenizer.pad_token_id] = -100
 
-    return features, labels, video_mask
+    return features, labels, video_mask, text_mask
 
 
 def train_one_epoch(model, loader, optimizer):
@@ -63,16 +68,16 @@ def train_one_epoch(model, loader, optimizer):
 
     pbar = tqdm(loader, desc="Training")
 
-    for hand_features, text_ids, video_mask in pbar:
+    for features, text_ids, video_mask, text_mask in pbar:
 
-        hand_features = hand_features.to(DEVICE, non_blocking=True)
+        features = features.to(DEVICE, non_blocking=True)
         text_ids = text_ids.to(DEVICE, non_blocking=True)
         video_mask = video_mask.to(DEVICE, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
         outputs = model(
-            hand_features,
+            features,
             text_ids=text_ids,
             video_mask=video_mask
         )
@@ -102,15 +107,14 @@ def validate(model, loader):
 
     with torch.no_grad():
 
-        for hand_features, text_ids, video_mask in loader:
-
-            hand_features = hand_features.to(DEVICE, non_blocking=True)
+        for features, text_ids, video_mask, text_mask in loader:
+            features = features.to(DEVICE, non_blocking=True)
             text_ids = text_ids.to(DEVICE, non_blocking=True)
             video_mask = video_mask.to(DEVICE, non_blocking=True)
 
 
             outputs = model(
-                hand_features,
+                features,
                 text_ids=text_ids,
                 video_mask=video_mask
             )
@@ -128,7 +132,7 @@ def main():
         use_fast=False
     )
 
-    dataset = HandLandmarksDataset(FEATURE_DIR, tokenizer)
+    dataset = HandLandmarksDataset(FEATURE_DIR, tokenizer, fusion_component)
 
     train_size = int(len(dataset) * 0.8)
     val_size = int(len(dataset) * 0.1)
@@ -154,10 +158,10 @@ def main():
         pin_memory=True
     )
 
-    sample, _ = train_dataset[0]
+    feature, text_ids = train_dataset[0]
 
     model = SignLanguageTranslatorV1(
-        input_dim=sample.shape[-1]
+        input_dim=feature.shape[-1]
     ).to(DEVICE)
 
     optimizer = torch.optim.AdamW(

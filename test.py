@@ -1,8 +1,10 @@
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from rouge_score import rouge_scorer
 
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from src.utils import FusionComponent
+
 
 import torch
 
@@ -19,16 +21,11 @@ from main import collate_fn
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-FEATURE_DIR = os.path.join(
-    ROOT,
-    "datasets",
-    "processed",
-    "mediapipe",
-    "hands"
-)
+FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_how2sign")
 
 MODEL_PATH = os.path.join(
     ROOT,
+    "outputs",
     "models",
     "best-06-05.pt"
 )
@@ -36,7 +33,7 @@ MODEL_PATH = os.path.join(
 BATCH_SIZE = 8
 MAX_DATASET_LENGTH = 1000
 
-
+fusion_component = FusionComponent()
 
 tokenizer = AutoTokenizer.from_pretrained(
     "google/mt5-small",
@@ -45,7 +42,8 @@ tokenizer = AutoTokenizer.from_pretrained(
 
 dataset = HandLandmarksDataset(
     FEATURE_DIR,
-    tokenizer
+    tokenizer,
+    fusion_component
 )
 
 total_size = len(dataset)
@@ -79,7 +77,7 @@ train_loader = DataLoader(
 )
 
 test_loader = DataLoader(
-    test_dataset,
+    train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
     collate_fn=partial(
@@ -92,10 +90,10 @@ test_loader = DataLoader(
 # -----------------------------
 # LOAD MODEL
 # -----------------------------
-sample_feature, _ = dataset[0]
+feature, text_ids = train_dataset[0]
 
 model = SignLanguageTranslatorV1(
-    input_dim=sample_feature.shape[-1]
+    input_dim=feature.shape[-1]
 ).to(DEVICE)
 
 checkpoint = torch.load(
@@ -128,13 +126,14 @@ print("\nRunning Test Evaluation...\n")
 
 with torch.no_grad():
 
-    for hand_features, labels, video_mask in test_loader:
+    for features, text_ids, video_mask, text_mask in test_loader:
 
-        hand_features = hand_features.to(DEVICE)
-        video_mask = video_mask.to(DEVICE)
+        features = features.to(DEVICE, non_blocking=True)
+        text_ids = text_ids.to(DEVICE, non_blocking=True)
+        video_mask = video_mask.to(DEVICE, non_blocking=True)
 
         generated_ids = model.generate(
-            hand_features,
+            features,
             video_mask=video_mask,
             max_length=64
         )
@@ -144,11 +143,11 @@ with torch.no_grad():
             skip_special_tokens=True
         )
 
-        labels = labels.clone()
-        labels[labels == -100] = tokenizer.pad_token_id
+        text_ids = text_ids.clone()
+        text_ids[text_ids == -100] = tokenizer.pad_token_id
 
         refs = tokenizer.batch_decode(
-            labels,
+            text_ids,
             skip_special_tokens=True
         )
 

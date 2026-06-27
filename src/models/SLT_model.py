@@ -5,27 +5,28 @@ from transformers import MT5ForConditionalGeneration
 from transformers.modeling_outputs import BaseModelOutput
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from models.positional_encoding import PositionalEncoding
+from src.models.positional_encoding import PositionalEncoding
 
 
 class SignLanguageTranslatorV1(nn.Module):
 
     def __init__(
         self,
-        input_dim=126,
+        input_dim=186,
         hidden_dim=256,
         temporal_hidden=256,
-        pretrained_model="google/mt5-small"
+        pretrained_model="google/mt5-small",
+        freeze_mt5_encoder=False
     ):
         super().__init__()
 
-        self.mt5 = MT5ForConditionalGeneration.from_pretrained(
-            pretrained_model
-        )
-
+        self.mt5 = MT5ForConditionalGeneration.from_pretrained(pretrained_model)
         d_model = self.mt5.config.d_model
 
-        # Temporal encoder (LSTM only)
+        if freeze_mt5_encoder:
+            for param in self.mt5.encoder.parameters():
+                param.requires_grad = False
+
         self.temporal_encoder = nn.LSTM(
             input_size=input_dim,
             hidden_size=temporal_hidden,
@@ -36,7 +37,6 @@ class SignLanguageTranslatorV1(nn.Module):
 
         temporal_out_dim = temporal_hidden * 2
 
-        # Projection → MT5 embedding space
         self.input_projection = nn.Sequential(
             nn.Linear(temporal_out_dim, hidden_dim),
             nn.GELU(),
@@ -45,83 +45,55 @@ class SignLanguageTranslatorV1(nn.Module):
             nn.LayerNorm(d_model)
         )
 
-    def encode(self, hand_features, video_mask):
+    def encode(self, features, video_mask):
         """
-        hand_features: (B, T, 126)
-        video_mask   : (B, T)
+        features  : (B, T, 186)  # fused pose + hand
+        video_mask: (B, T)
         """
-
         if video_mask is None:
             raise ValueError("video_mask is required")
 
         video_mask = video_mask.bool()
-
-        lengths = video_mask.sum(dim=1).cpu()
-        lengths = torch.clamp(lengths, min=1)
+        lengths = torch.clamp(video_mask.sum(dim=1).cpu(), min=1)
 
         packed = pack_padded_sequence(
-            hand_features,
-            lengths,
-            batch_first=True,
-            enforce_sorted=False
+            features, lengths, batch_first=True, enforce_sorted=False
         )
-
         packed_out, _ = self.temporal_encoder(packed)
-
         x, _ = pad_packed_sequence(
-            packed_out,
-            batch_first=True,
-            total_length=hand_features.size(1)
+            packed_out, batch_first=True, total_length=features.size(1)
         )
 
-        # projection only (NO transformer, NO positional encoding)
-        x = self.input_projection(x)
+        return self.input_projection(x)
 
-        return x
+    def forward(self, features, text_ids=None, video_mask=None):
+        encoder_hidden_states = self.encode(features, video_mask)
 
-    def forward(
-        self,
-        hand_features,
-        text_ids=None,
-        video_mask=None
-    ):
-
-        encoder_hidden_states = self.encode(
-            hand_features,
-            video_mask
-        )
-
-        outputs = self.mt5(
+        return self.mt5(
             encoder_outputs=BaseModelOutput(
                 last_hidden_state=encoder_hidden_states
             ),
+            attention_mask=video_mask.long() if video_mask is not None else None,
             labels=text_ids
         )
-
-        return outputs
 
     @torch.no_grad()
     def generate(
         self,
-        hand_features,
+        features,
         video_mask=None,
         max_length=64,
         num_beams=4,
         repetition_penalty=1.2,
         no_repeat_ngram_size=3
     ):
-
-        encoder_hidden_states = self.encode(
-            hand_features,
-            video_mask
-        )
-
-        encoder_outputs = BaseModelOutput(
-            last_hidden_state=encoder_hidden_states
-        )
+        encoder_hidden_states = self.encode(features, video_mask)
 
         return self.mt5.generate(
-            encoder_outputs=encoder_outputs,
+            encoder_outputs=BaseModelOutput(
+                last_hidden_state=encoder_hidden_states
+            ),
+            attention_mask=video_mask.long() if video_mask is not None else None,
             max_length=max_length,
             num_beams=num_beams,
             repetition_penalty=repetition_penalty,
