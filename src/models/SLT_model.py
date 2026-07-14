@@ -7,18 +7,6 @@ from transformers.modeling_outputs import BaseModelOutput
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from src.models.positional_encoding import PositionalEncoding
-from src.utils.spatial_graph import SpatialGraphConv
-
-
-# =============================================================================
-# Shared helpers for the classification variants (V1, V3)
-# -----------------------------------------------------------------------------
-# WLASL "text" is a single gloss, not a sentence — so V1/V3 treat this as what
-# it actually is: isolated sign classification, not seq2seq generation.
-# Both need to turn a (B, T, d_model) sequence into a single (B, d_model)
-# vector before the final Linear classifier, so the pooling logic lives here
-# once instead of being duplicated in both model classes.
-# =============================================================================
 
 class ClassificationOutput:
 
@@ -44,7 +32,7 @@ class SignLanguageTranslatorV1(nn.Module):
 
     def __init__(
         self,
-        input_dim=185,
+        input_dim=186,
         hidden_dim=256,
         temporal_hidden=256,
         dropout=0.1,
@@ -122,12 +110,14 @@ class SignLanguageTranslatorV1(nn.Module):
 # =============================================================================
 # V2 — Pure Transformer Encoder: Projection -> PositionalEncoding -> Transformer (6L) -> mT5
 # -----------------------------------------------------------------------------
+# Pipeline: raw features -> Linear Projection -> PositionalEncoding
+#           -> Transformer Encoder (6 layers) -> mT5 decoder
 
 class SignLanguageTranslatorV2(nn.Module):
 
     def __init__(
         self,
-        input_dim=185,
+        input_dim=186,
         hidden_dim=256,
         num_encoder_layers=6,
         nhead=8,
@@ -197,11 +187,6 @@ class SignLanguageTranslatorV2(nn.Module):
             p.requires_grad = True
 
     def encode(self, features, video_mask):
-        """
-        features  : (B, T, 186)  — fused pose + hand
-        video_mask: (B, T)       — 1 = valid frame, 0 = padding
-        """
-
         if video_mask is None:
             raise ValueError("video_mask is required")
 
@@ -267,40 +252,25 @@ class SignLanguageTranslatorV3(nn.Module):
 
     def __init__(
         self,
-        input_dim=183,
+        input_dim=186,
         hidden_dim=256,
         num_encoder_layers=6,
         nhead=8,
         dim_feedforward=2048,
         dropout=0.2,
         max_seq_len=5000,
-        num_classes=2000,
-        use_gcn=False,
-        gcn_out_channels=32
+        num_classes=2000
     ):
         super().__init__()
 
-        self.use_gcn = use_gcn
         d_model = hidden_dim
 
-        if use_gcn:
-            self.gcn = SpatialGraphConv(in_channels=3, out_channels=gcn_out_channels)
-            gcn_flat_dim = 61 * gcn_out_channels
-            flag_dim = input_dim - 183
-            
-            self.input_projection = nn.Sequential(
-                nn.Linear(gcn_flat_dim + flag_dim, d_model),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.LayerNorm(d_model)
-            )
-        else:
-            self.input_projection = nn.Sequential(
-                nn.Linear(input_dim, d_model),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.LayerNorm(d_model)
-            )
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(d_model)
+        )
 
         self.pos_encoder = PositionalEncoding(
             d_model=d_model,
@@ -334,20 +304,7 @@ class SignLanguageTranslatorV3(nn.Module):
 
         video_mask = video_mask.bool()
 
-        if self.use_gcn:
-            B, T, _ = features.shape
-            coords = features[:, :, :183].reshape(B, T, 61, 3)
-            gcn_out = self.gcn(coords) # (B, T, 61, gcn_out_channels)
-            gcn_out_flat = gcn_out.reshape(B, T, -1) # (B, T, 61 * gcn_out_channels)
-            
-            if features.shape[-1] > 183:
-                flags = features[:, :, 183:]
-                gcn_out_flat = torch.cat([gcn_out_flat, flags], dim=-1)
-                
-            x = self.input_projection(gcn_out_flat)
-        else:
-            x = self.input_projection(features)       # (B, T, d_model)
-
+        x = self.input_projection(features)       # (B, T, d_model)
         x = self.pos_encoder(x)                    # (B, T, d_model)
         x = self.encoder(
             x,
@@ -358,29 +315,19 @@ class SignLanguageTranslatorV3(nn.Module):
         return x
 
     def forward(self, features, labels=None, video_mask=None):
-
         x = self.encode(features, video_mask)
-
         pooled = masked_mean_pool(x, video_mask.bool())
-
-        logits = self.classifier(pooled)
+        logits = self.classifier(pooled)           # (B, num_classes)
 
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits, labels)
 
-        return ClassificationOutput(
-            loss=loss,
-            logits=logits
-        )
+        return ClassificationOutput(loss=loss, logits=logits)
 
     @torch.no_grad()
     def predict(self, features, video_mask=None, top_k=1):
-        logits = self.forward(
-            features,
-            labels=None,
-            video_mask=video_mask
-        ).logits
+        logits = self.forward(features, video_mask=video_mask).logits
         if top_k == 1:
             return logits.argmax(dim=-1)
         return logits.topk(k=top_k, dim=-1).indices

@@ -1,8 +1,11 @@
+import json
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import random
 from collections import defaultdict
 
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from transformers import AutoTokenizer
 
 import torch
 from tqdm import tqdm
@@ -11,7 +14,7 @@ from torch.utils.data import DataLoader
 
 from src.utils.fusion_component import FusionComponent
 from src.data.WSASL_raw import WLASLLandmarksDataset
-from src.models.SLT_model import SignLanguageTranslatorV3
+from src.models.SLT_model import SignLanguageTranslatorV3, SignLanguageTranslatorV1
 from config import ROOT
 
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,7 +23,8 @@ TOP_K       = 5
 SEED        = 42
 
 FEATURE_DIR  = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
-MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_13_best.pt")
+ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "test.json")
+MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_08_best.pt")
 
 fusion_component = FusionComponent()
 
@@ -109,6 +113,9 @@ def print_most_confused(wrong_preds, n=10):
 
 def main():
 
+    with open(os.path.join(ROOT, "datasets", "annotations", "gloss2idx.json"), "r") as f:
+        gloss2idx = json.load(f)
+
     print(f"\n{'='*60}")
     print(f"  WLASL Test Evaluation")
     print(f"{'='*60}")
@@ -119,7 +126,6 @@ def main():
         print(f"\n[ERROR] Khong tim thay checkpoint: {MODEL_PATH}")
         return
 
-    # Load checkpoint
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
     model_kwargs = checkpoint["model_kwargs"]
 
@@ -128,12 +134,11 @@ def main():
     print(f"  Val top-1 (saved): {checkpoint.get('val_top1_acc', 'N/A')}")
 
     test_dataset = WLASLLandmarksDataset(
-        FEATURE_DIR,
-        fusion_component,
-        split="test"
+        FEATURE_DIR, ANNOTATION_DIR , fusion_component, max_samples=None
     )
 
-    print(f"Dataset — test: {len(test_dataset)}")
+    num_classes = len(gloss2idx)
+    print(f"Dataset — test: {num_classes}")
 
     # Check for feature dimension mismatch (e.g. old 183-dim checkpoint vs new 185-dim features)
     feature, _ = test_dataset[0]
@@ -144,11 +149,10 @@ def main():
         num_workers=2, pin_memory=True
     )
 
-    # Invert gloss2idx
-    idx2gloss = {v: k for k, v in test_dataset.gloss2idx.items()}
+    idx2gloss = {v: k for k, v in gloss2idx.items()}
 
     # Load model
-    model = SignLanguageTranslatorV3(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV1(**model_kwargs).to(DEVICE)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 

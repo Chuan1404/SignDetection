@@ -1,175 +1,108 @@
 import os
 import json
-import random
 import numpy as np
-from collections import defaultdict
 import torch
-from torch.utils.data import Dataset, Subset
+from torch.utils.data import Dataset
+
 from config import ROOT
 
 
 class WLASLLandmarksDataset(Dataset):
 
-    def __init__(
-        self,
-        feature_dir,
-        fusion_component,
-        split="train",
-        max_samples=None
-    ):
-
+    def __init__(self, feature_dir, annotation_dir, fusion_component, max_samples=1000):
         self.feature_dir = feature_dir
         self.fusion_component = fusion_component
 
-        # Accept either a single split name or a list of split names
-        # e.g. split="train"  or  split=["train", "val"]
-        splits = [split] if isinstance(split, str) else split
-
-        annotations = []
-        for s in splits:
-            annotation_path = os.path.join(
-                ROOT, "datasets", "annotations", f"{s}.json"
-            )
-            with open(annotation_path, "r", encoding="utf-8") as f:
-                annotations.extend(json.load(f))
+        self.samples = []
 
         with open(os.path.join(ROOT, "datasets", "annotations", "gloss2idx.json"), "r") as f:
             self.gloss2idx = json.load(f)
 
-        if max_samples is not None:
-            annotations = annotations[:max_samples]
+        with open(os.path.join(annotation_dir), "r") as f:
+            data = json.load(f)
+            video_ids = [d["video_id"] for d in data]
+            all_video_names = sorted(video_ids)
 
-        self.samples = []
-
-        for sample in annotations:
+        for index, video_name in enumerate(all_video_names):
+            if max_samples is not None and index >= max_samples:
+                break
 
             video_dir = os.path.join(
                 feature_dir,
-                sample["video_id"]
+                video_name
             )
 
-            fused_path = os.path.join(video_dir, "fused.npy")
+            if not os.path.isdir(video_dir):
+                continue
+
             left_hand_path = os.path.join(video_dir, "left_hand.npy")
             right_hand_path = os.path.join(video_dir, "right_hand.npy")
             pose_path = os.path.join(video_dir, "pose.npy")
 
             text_path = os.path.join(video_dir, "gloss.txt")
 
-            if os.path.exists(fused_path) and os.path.exists(text_path):
-                self.samples.append(
-                    {
-                        "fused_path": fused_path,
-                        "text_path": text_path,
-                        "has_prefused": True
-                    }
-                )
-            elif (
-                os.path.exists(left_hand_path)
-                and os.path.exists(right_hand_path)
-                and os.path.exists(pose_path)
-                and os.path.exists(text_path)
+            if (
+                    os.path.exists(left_hand_path)
+                    and os.path.exists(right_hand_path)
+                    and os.path.exists(pose_path)
+                    and os.path.exists(text_path)
             ):
-                self.samples.append(
-                    {
-                        "left_hand_path": left_hand_path,
-                        "right_hand_path": right_hand_path,
-                        "pose_path": pose_path,
-                        "text_path": text_path,
-                        "has_prefused": False
-                    }
-                )
-
-        split_label = "+".join(splits)
-        print(f"{split_label}: {len(self.samples)} samples loaded.")
+                self.samples.append({
+                    "left_hand_path": left_hand_path,
+                    "right_hand_path": right_hand_path,
+                    "pose_path": pose_path,
+                    "text_path": text_path
+                })
 
     def __len__(self):
         return len(self.samples)
-
-    def get_labels(self):
-        """
-        Reads class labels for all samples without loading heavy feature files.
-        Used by stratified_split() to group samples by class.
-        Returns a list of integer class indices, one per sample.
-        """
-        labels = []
-        for item in self.samples:
-            with open(item["text_path"], "r", encoding="utf-8") as f:
-                gloss = f.read().strip().lower()
-            labels.append(self.gloss2idx[gloss])
-        return labels
 
     def __getitem__(self, idx):
 
         item = self.samples[idx]
 
+        left_features = np.load(item["left_hand_path"])
+        right_features = np.load(item["right_hand_path"])
+        pose_features = np.load(item["pose_path"])
+
         with open(item["text_path"], "r", encoding="utf-8") as f:
-            gloss = f.read().strip().lower()
+            gloss = f.read().strip()
+        label_id = self.gloss2idx[gloss]
 
-        label = self.gloss2idx[gloss]
+        left_features = torch.tensor(left_features).float()
+        right_features = torch.tensor(right_features).float()
 
-        if item.get("has_prefused", False):
-            features = np.load(item["fused_path"])
-        else:
-            left_features = np.load(item["left_hand_path"])
-            right_features = np.load(item["right_hand_path"])
-            pose_features = np.load(item["pose_path"])
+        hand_features = torch.concatenate([left_features, right_features], dim=-1)
+        pose_features = torch.tensor(pose_features).float()
 
-            left_features = left_features.astype(np.float32)
-            right_features = right_features.astype(np.float32)
-            pose_features = pose_features.astype(np.float32)
+        # hand_features = self.normalize_features(hand_features)
 
-            hand_features = np.concatenate(
-                [left_features, right_features],
-                axis=-1
-            )
+        features = self.fusion_component.fuse(pose_features, hand_features)
+        T = features.shape[0]
+        features = features.reshape(T, -1)
 
-            features = self.fusion_component.fuse(
-                pose_features,
-                hand_features
-            )
+        return features, label_id
 
-            T = features.shape[0]
-            features = features.reshape(T, -1)
+    def normalize_features(self, hand_features):
 
-        return features, label
+        T = hand_features.shape[0]
 
+        x = hand_features.reshape(T, 2, 21, 3)
 
-def stratified_split(dataset, val_ratio=0.1, seed=42):
-    """
-    Stratified train/val split that mirrors the original implementation but
-    works directly with WLASLLandmarksDataset.
+        # use first frame as root
+        right_wrist_0 = x[0, 0, 0, :].clone()
+        left_wrist_0 = x[0, 1, 0, :].clone()
 
-    Instead of calling __getitem__ (which loads heavy .npy files), we use
-    dataset.get_labels() to read only the lightweight gloss .txt files,
-    then group their indices by class label before splitting.
+        x[:, 0] = x[:, 0] - right_wrist_0
+        x[:, 1] = x[:, 1] - left_wrist_0
 
-    Args:
-        dataset   : WLASLLandmarksDataset — the full combined dataset.
-        val_ratio : float — fraction of each class's samples to put in val.
-        seed      : int   — random seed for reproducibility.
+        scale_right = torch.norm(x[:, 0], dim=-1).mean()
+        scale_left = torch.norm(x[:, 1], dim=-1).mean()
 
-    Returns:
-        train_subset, val_subset : torch.utils.data.Subset
-    """
-    rng = random.Random(seed)
+        scale = torch.clamp((scale_right + scale_left) / 2, min=1e-6)
 
-    # Read all labels without loading feature files
-    labels = dataset.get_labels()
+        x = x / scale
 
-    # Group indices by class
-    class_to_indices = defaultdict(list)
-    for i, label in enumerate(labels):
-        class_to_indices[label].append(i)
+        x = x.reshape(T, -1)
 
-    train_indices, val_indices = [], []
-    for label, indices in class_to_indices.items():
-        rng.shuffle(indices)
-        # Classes with only 1 sample go entirely to train
-        n_val = max(1, int(len(indices) * val_ratio)) if len(indices) > 1 else 0
-        val_indices.extend(indices[:n_val])
-        train_indices.extend(indices[n_val:])
-
-    rng.shuffle(train_indices)
-    rng.shuffle(val_indices)
-
-    return Subset(dataset, train_indices), Subset(dataset, val_indices)
+        return x

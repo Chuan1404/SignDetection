@@ -1,16 +1,17 @@
 import json
 import os
+import random
+from collections import defaultdict
 
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-
-from src.data.WSASL_raw import WLASLLandmarksDataset, stratified_split
+from src.data.WSASL_raw import WLASLLandmarksDataset
 import torch
 from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from src.utils import FusionComponent
 from src.models.SLT_model import SignLanguageTranslatorV3, SignLanguageTranslatorV1
@@ -20,26 +21,46 @@ from config import ROOT
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE  = 8
 EPOCHS      = 100
-LR          = 1e-4
+LR          = 1e-4   # single LR — no pretrained submodule to protect anymore
 PATIENCE    = 10
 WARMUP_EPOCHS = 5
-TOP_K       = 5
-VAL_RATIO   = 0.1
-TEST_RATIO = 0.1
-SEED = 42
+TOP_K       = 5       # for top-k accuracy reporting
+VAL_RATIO   = 0.1     # per-class fraction held out for validation
+SEED        = 42      # for reproducible shuffling/splitting
 
 
 FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
+ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "train.json")
 SAVE_DIR    = os.path.join(ROOT, "outputs", "models")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 fusion_component = FusionComponent()
 
+
+def stratified_split(sample_labels, val_ratio=0.1, seed=42):
+    rng = random.Random(seed)
+
+    class_to_indices = defaultdict(list)
+    for idx, label in enumerate(sample_labels):
+        class_to_indices[label].append(idx)
+
+    train_indices, val_indices = [], []
+    for label, indices in class_to_indices.items():
+        rng.shuffle(indices)
+        n_val = int(len(indices) * val_ratio) if len(indices) > 1 else 0
+        val_indices.extend(indices[:n_val])
+        train_indices.extend(indices[n_val:])
+
+    rng.shuffle(train_indices)
+    rng.shuffle(val_indices)
+
+    return train_indices, val_indices
+
+
 def collate_fn(batch):
     features, labels = [], []
 
     for feature, label in batch:
-
         features.append(torch.as_tensor(feature, dtype=torch.float32))
         labels.append(label)
 
@@ -51,12 +72,14 @@ def collate_fn(batch):
         torch.arange(features.shape[1]).unsqueeze(0)
         < torch.tensor(real_lengths).unsqueeze(1)
     ).long()
+
     labels = torch.tensor(labels, dtype=torch.long)
 
     return features, labels, video_mask
 
 
 def get_lr_scale(epoch, warmup_epochs):
+    """Linear warmup: epoch 0..warmup_epochs-1 -> LR ramps from 0 to 1.0"""
     if epoch < warmup_epochs:
         return (epoch + 1) / warmup_epochs
     return 1.0
@@ -70,6 +93,7 @@ def train_one_epoch(model, loader, optimizer):
     pbar = tqdm(loader, desc="Training")
 
     for features, labels, video_mask in pbar:
+
         features   = features.to(DEVICE, non_blocking=True)
         labels     = labels.to(DEVICE, non_blocking=True)
         video_mask = video_mask.to(DEVICE, non_blocking=True)
@@ -136,23 +160,34 @@ def validate(model, loader, top_k=5):
 
 
 def main():
+    with open(os.path.join(ROOT, "datasets", "annotations", "gloss2idx.json"), "r") as f:
+        gloss2idx = json.load(f)
 
-    # Pool ALL available labelled data (train + val annotations) into one
-    # dataset, then stratify-split it so every class is proportionally
-    # represented in both partitions — no samples are left unused.
-    full_dataset = WLASLLandmarksDataset(
-        FEATURE_DIR,
-        fusion_component,
-        split=["train", "val", "test"]
+    base_dataset = WLASLLandmarksDataset(
+        FEATURE_DIR, ANNOTATION_DIR, fusion_component, max_samples=None
     )
 
-    train_dataset, val_dataset = stratified_split(
-        full_dataset,
-        val_ratio=VAL_RATIO,
-        seed=SEED
+    sample_labels = []
+    for i in tqdm(range(len(base_dataset))):
+        _, label_id = base_dataset[i]
+        sample_labels.append(label_id)
+
+    num_classes = len(gloss2idx)
+
+    train_indices, val_indices = stratified_split(
+        sample_labels, val_ratio=VAL_RATIO, seed=SEED
     )
 
-    print(f"Dataset (stratified) — train: {len(train_dataset)}, val: {len(val_dataset)}")
+    train_dataset = Subset(base_dataset, train_indices)
+    val_dataset   = Subset(base_dataset, val_indices)
+
+    print(f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}")
+
+    train_classes = set(sample_labels[i] for i in train_indices)
+    val_classes   = set(sample_labels[i] for i in val_indices)
+    print(f"Classes in train: {len(train_classes)}/{num_classes}, "
+          f"classes in val: {len(val_classes)}/{num_classes}, "
+          f"val classes missing from train: {len(val_classes - train_classes)}")
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
@@ -165,24 +200,20 @@ def main():
         num_workers=2, pin_memory=True
     )
 
-    feature, _ = full_dataset[0]
-
-    num_classes = len(full_dataset.gloss2idx)
+    feature, _ = train_dataset[0]
 
     model_kwargs = dict(
         input_dim=feature.shape[-1],
-        # hidden_dim=256,
+        hidden_dim=256,
+        # num_encoder_layers=6,
         # nhead=8,
         # dim_feedforward=2048,
-        # num_encoder_layers=8,
-        dropout=0.2,
+        dropout=0.1,
         # max_seq_len=5000,
-        num_classes=num_classes,
-        # use_gcn=True,
-        # gcn_out_channels=32
+        num_classes=num_classes
     )
 
-    model = SignLanguageTranslatorV3(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV1(**model_kwargs).to(DEVICE)
 
     total_params     = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -235,8 +266,7 @@ def main():
                 "val_top1_acc": val_top1_acc,
                 "val_topk_acc": val_topk_acc,
                 "model_kwargs": model_kwargs,
-            }, os.path.join(SAVE_DIR, "26_07_13_best.pt"))
-
+            }, os.path.join(SAVE_DIR, "26_07_08_best.pt"))
             print(f"✓ Saved best model  (val_loss={best_loss:.4f})")
         else:
             no_improve += 1

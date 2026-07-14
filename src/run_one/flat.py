@@ -62,11 +62,8 @@ def flatten_wlasl():
 
             split = instance["split"].lower()
 
-            if split == "train":
+            if split == "train" or split == "val":
                 train_entries.append(sample)
-
-            elif split == "val":
-                val_entries.append(sample)
 
             elif split == "test":
                 test_entries.append(sample)
@@ -97,8 +94,8 @@ def flatten_wlasl():
     with open(os.path.join(SAVE_DIR, "train.json"), "w", encoding="utf-8") as f:
         json.dump(train_entries, f, indent=2, ensure_ascii=False)
 
-    with open(os.path.join(SAVE_DIR, "val.json"), "w", encoding="utf-8") as f:
-        json.dump(val_entries, f, indent=2, ensure_ascii=False)
+    # with open(os.path.join(SAVE_DIR, "val.json"), "w", encoding="utf-8") as f:
+    #     json.dump(val_entries, f, indent=2, ensure_ascii=False)
 
     with open(os.path.join(SAVE_DIR, "test.json"), "w", encoding="utf-8") as f:
         json.dump(test_entries, f, indent=2, ensure_ascii=False)
@@ -115,7 +112,7 @@ def flatten_wlasl():
     print(f"Glosses        : {len(gloss_list)}")
     print(f"Missing videos : {skipped}")
     print(f"Train samples  : {len(train_entries)}")
-    print(f"Val samples    : {len(val_entries)}")
+    # print(f"Val samples    : {len(val_entries)}")
     print(f"Test samples   : {len(test_entries)}")
     print(f"Vocabulary     : {len(gloss2idx)}")
     print("=" * 60)

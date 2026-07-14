@@ -21,30 +21,19 @@ class FusionComponent:
         pass
 
     def fuse(self, pose_feature, hand_feature):
-        """
-        Fuses pose and hand features over all frames.
-        
-        Args:
-            pose_feature: Array-like of shape (T, 33, 3) or (T, 99)
-            hand_feature: Array-like of shape (T, 126)
-            
-        Returns:
-            fused_features: NumPy array of shape (T, 185) where the last 2 columns
-                            are [left_present, right_present] flags.
-        """
         pose = np.asarray(pose_feature, dtype=np.float32)
         hand = np.asarray(hand_feature, dtype=np.float32)
-        
+
         T = pose.shape[0]
-        
+
         # Reshape to 3D coordinate tensors
         left_hand = hand[:, :63].reshape(T, 21, 3).copy()
         right_hand = hand[:, 63:].reshape(T, 21, 3).copy()
         pose = pose.reshape(T, 33, 3).copy()
 
         # 1. Detect hand presence before normalization (any non-zero coordinate)
-        has_left = np.any(left_hand != 0.0, axis=(1, 2))   # (T,)
-        has_right = np.any(right_hand != 0.0, axis=(1, 2)) # (T,)
+        has_left = np.any(left_hand != 0.0, axis=(1, 2))  # (T,)
+        has_right = np.any(right_hand != 0.0, axis=(1, 2))  # (T,)
 
         left_present = has_left.astype(np.float32).reshape(T, 1)
         right_present = has_right.astype(np.float32).reshape(T, 1)
@@ -59,7 +48,7 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         # Reshape for broadcasting
-        root = root[:, np.newaxis, :]    # (T, 1, 3)
+        root = root[:, np.newaxis, :]  # (T, 1, 3)
         scale = scale[:, np.newaxis, :]  # (T, 1, 1)
 
         pose = (pose - root) / scale
@@ -78,10 +67,10 @@ class FusionComponent:
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)  # axis=1 represents landmarks
 
         # 6. Concatenate along landmarks dimension
-        fused_coords = np.concatenate([pose, left_hand, right_hand], axis=1) # (T, 61, 3)
-        fused_flat = fused_coords.reshape(T, -1) # (T, 183)
+        fused_coords = np.concatenate([pose, left_hand, right_hand], axis=1)  # (T, 61, 3)
+        fused_flat = fused_coords.reshape(T, -1)  # (T, 183)
 
         # 7. Append the global hand presence flags
-        fused_final = np.concatenate([fused_flat, left_present, right_present], axis=1) # (T, 185)
+        fused_final = np.concatenate([fused_flat, left_present, right_present], axis=1)  # (T, 185)
 
         return fused_final
