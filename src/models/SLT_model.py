@@ -1,31 +1,56 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers import MT5ForConditionalGeneration
 from transformers.modeling_outputs import BaseModelOutput
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from src.models.positional_encoding import PositionalEncoding
+from src.utils.spatial_graph import SpatialGraphConv
 
+
+# =============================================================================
+# Shared helpers for the classification variants (V1, V3)
+# -----------------------------------------------------------------------------
+# WLASL "text" is a single gloss, not a sentence — so V1/V3 treat this as what
+# it actually is: isolated sign classification, not seq2seq generation.
+# Both need to turn a (B, T, d_model) sequence into a single (B, d_model)
+# vector before the final Linear classifier, so the pooling logic lives here
+# once instead of being duplicated in both model classes.
+# =============================================================================
+
+class ClassificationOutput:
+
+    def __init__(self, loss=None, logits=None):
+        self.loss = loss
+        self.logits = logits
+
+
+def masked_mean_pool(x, video_mask):
+    mask = video_mask.unsqueeze(-1).float()          # (B, T, 1)
+    summed = (x * mask).sum(dim=1)                    # (B, D)
+    counts = mask.sum(dim=1).clamp(min=1.0)           # (B, 1) — avoid /0
+    return summed / counts
+
+
+# =============================================================================
+# V1 — Baseline: Bi-LSTM + Projection -> Linear gloss classifier
+# -----------------------------------------------------------------------------
+# Pipeline: raw features -> BiLSTM (temporal) -> Linear projection
+#           -> masked mean pool -> Linear classifier -> gloss logits
 
 class SignLanguageTranslatorV1(nn.Module):
 
     def __init__(
         self,
-        input_dim=186,
+        input_dim=185,
         hidden_dim=256,
         temporal_hidden=256,
-        pretrained_model="google/mt5-small",
-        freeze_mt5_encoder=False
+        dropout=0.1,
+        num_classes=2000
     ):
         super().__init__()
-
-        self.mt5 = MT5ForConditionalGeneration.from_pretrained(pretrained_model)
-        d_model = self.mt5.config.d_model
-
-        if freeze_mt5_encoder:
-            for param in self.mt5.encoder.parameters():
-                param.requires_grad = False
 
         self.temporal_encoder = nn.LSTM(
             input_size=input_dim,
@@ -40,14 +65,18 @@ class SignLanguageTranslatorV1(nn.Module):
         self.input_projection = nn.Sequential(
             nn.Linear(temporal_out_dim, hidden_dim),
             nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, d_model),
-            nn.LayerNorm(d_model)
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim)
         )
+
+        self.classifier = nn.Linear(hidden_dim, num_classes)
+
+    def get_optimizer_param_groups(self, lr):
+        return [{"params": self.parameters(), "lr": lr, "name": "all"}]
 
     def encode(self, features, video_mask):
         """
-        features  : (B, T, 186)  # fused pose + hand
+        features  : (B, T, input_dim)  # fused pose + hand
         video_mask: (B, T)
         """
         if video_mask is None:
@@ -64,9 +93,137 @@ class SignLanguageTranslatorV1(nn.Module):
             packed_out, batch_first=True, total_length=features.size(1)
         )
 
-        return self.input_projection(x)
+        return self.input_projection(x)   # (B, T, hidden_dim)
 
-    def forward(self, features, text_ids=None, video_mask=None):
+    def forward(self, features, labels=None, video_mask=None):
+        """
+        labels: (B,) LongTensor of gloss class indices, or None at inference.
+        """
+        x = self.encode(features, video_mask)
+        pooled = masked_mean_pool(x, video_mask.bool())
+        logits = self.classifier(pooled)          # (B, num_classes)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return ClassificationOutput(loss=loss, logits=logits)
+
+    @torch.no_grad()
+    def predict(self, features, video_mask=None, top_k=1):
+        """Convenience wrapper for inference — returns class indices,
+        top-1 (shape (B,)) or top-k (shape (B, top_k))."""
+        logits = self.forward(features, video_mask=video_mask).logits
+        if top_k == 1:
+            return logits.argmax(dim=-1)
+        return logits.topk(k=top_k, dim=-1).indices
+
+
+# =============================================================================
+# V2 — Pure Transformer Encoder: Projection -> PositionalEncoding -> Transformer (6L) -> mT5
+# -----------------------------------------------------------------------------
+
+class SignLanguageTranslatorV2(nn.Module):
+
+    def __init__(
+        self,
+        input_dim=185,
+        hidden_dim=256,
+        num_encoder_layers=6,
+        nhead=8,
+        dim_feedforward=2048,
+        dropout=0.2,
+        max_seq_len=5000,
+        pretrained_model="google/mt5-small"
+    ):
+        super().__init__()
+
+        self.mt5 = MT5ForConditionalGeneration.from_pretrained(pretrained_model)
+        d_model = self.mt5.config.d_model  # 512 for mt5-small
+
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, d_model),
+            nn.LayerNorm(d_model)
+        )
+
+        self.pos_encoder = PositionalEncoding(
+            d_model=d_model,
+            max_len=max_seq_len,
+            dropout=dropout
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_encoder_layers
+        )
+
+        self.encoder_norm = nn.LayerNorm(d_model)
+
+    def get_optimizer_param_groups(self, lr_new_modules, lr_mt5):
+        mt5_param_ids = {id(p) for p in self.mt5.parameters()}
+        new_module_params = [p for p in self.parameters() if id(p) not in mt5_param_ids]
+        mt5_params = list(self.mt5.parameters())
+
+        return [
+            {"params": new_module_params, "lr": lr_new_modules, "name": "new_modules"},
+            {"params": mt5_params,        "lr": lr_mt5,         "name": "mt5_pretrained"},
+        ]
+
+    def set_mt5_trainable(self, embeddings: bool, encoder_layers_from: int):
+        num_layers = len(self.mt5.encoder.block)
+        encoder_layers_from = max(0, min(encoder_layers_from, num_layers))
+
+        for p in self.mt5.shared.parameters():
+            p.requires_grad = embeddings
+
+        for i, block in enumerate(self.mt5.encoder.block):
+            trainable = i >= encoder_layers_from
+            for p in block.parameters():
+                p.requires_grad = trainable
+
+        for p in self.mt5.encoder.final_layer_norm.parameters():
+            p.requires_grad = True
+
+    def encode(self, features, video_mask):
+        """
+        features  : (B, T, 186)  — fused pose + hand
+        video_mask: (B, T)       — 1 = valid frame, 0 = padding
+        """
+
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+
+        video_mask = video_mask.bool()
+
+        x = self.input_projection(features)      # (B, T, d_model)
+        x = self.pos_encoder(x)                   # (B, T, d_model)
+        x = self.encoder(
+            x,
+            src_key_padding_mask=~video_mask      # True = ignore (padding)
+        )                                          # (B, T, d_model)
+        x = self.encoder_norm(x)                  # (B, T, d_model)
+
+        return x
+
+    def forward(
+        self,
+        features,
+        text_ids=None,
+        video_mask=None
+    ):
+
         encoder_hidden_states = self.encode(features, video_mask)
 
         return self.mt5(
@@ -87,6 +244,7 @@ class SignLanguageTranslatorV1(nn.Module):
         repetition_penalty=1.2,
         no_repeat_ngram_size=3
     ):
+
         encoder_hidden_states = self.encode(features, video_mask)
 
         return self.mt5.generate(
@@ -100,55 +258,62 @@ class SignLanguageTranslatorV1(nn.Module):
             no_repeat_ngram_size=no_repeat_ngram_size
         )
 
-class SignLanguageTranslatorV2(nn.Module):
+
+# =============================================================================
+# V3 — Pure Transformer Encoder -> Linear gloss classifier
+# -----------------------------------------------------------------------------
+
+class SignLanguageTranslatorV3(nn.Module):
 
     def __init__(
         self,
-        input_dim=126,
+        input_dim=183,
         hidden_dim=256,
-        temporal_hidden=256,
-        num_encoder_layers=3,
+        num_encoder_layers=6,
         nhead=8,
+        dim_feedforward=2048,
+        dropout=0.2,
         max_seq_len=5000,
-        pretrained_model="google/mt5-small"
+        num_classes=2000,
+        use_gcn=False,
+        gcn_out_channels=32
     ):
         super().__init__()
 
-        self.mt5 = MT5ForConditionalGeneration.from_pretrained(
-            pretrained_model
-        )
+        self.use_gcn = use_gcn
+        d_model = hidden_dim
 
-        d_model = self.mt5.config.d_model
-
-        self.temporal_encoder = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=temporal_hidden,
-            num_layers=2,
-            batch_first=True,
-            bidirectional=True
-        )
-
-        temporal_out_dim = temporal_hidden * 2
-
-        self.input_projection = nn.Sequential(
-            nn.Linear(temporal_out_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, d_model),
-            nn.LayerNorm(d_model)
-        )
+        if use_gcn:
+            self.gcn = SpatialGraphConv(in_channels=3, out_channels=gcn_out_channels)
+            gcn_flat_dim = 61 * gcn_out_channels
+            flag_dim = input_dim - 183
+            
+            self.input_projection = nn.Sequential(
+                nn.Linear(gcn_flat_dim + flag_dim, d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.LayerNorm(d_model)
+            )
+        else:
+            self.input_projection = nn.Sequential(
+                nn.Linear(input_dim, d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.LayerNorm(d_model)
+            )
 
         self.pos_encoder = PositionalEncoding(
             d_model=d_model,
             max_len=max_seq_len,
-            dropout=0.1
+            dropout=dropout
         )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
             batch_first=True,
-            dropout=0.1,
             norm_first=True
         )
 
@@ -157,164 +322,65 @@ class SignLanguageTranslatorV2(nn.Module):
             num_layers=num_encoder_layers
         )
 
-    def encode(self, hand_features, video_mask):
-        """
-        hand_features: (B, T, 126)
-        video_mask   : (B, T)
-        """
+        self.encoder_norm = nn.LayerNorm(d_model)
+        self.classifier = nn.Linear(d_model, num_classes)
 
+    def get_optimizer_param_groups(self, lr):
+        return [{"params": self.parameters(), "lr": lr, "name": "all"}]
+
+    def encode(self, features, video_mask):
         if video_mask is None:
             raise ValueError("video_mask is required")
 
         video_mask = video_mask.bool()
 
-        lengths = video_mask.sum(dim=1).cpu()
-        lengths = torch.clamp(lengths, min=1)
+        if self.use_gcn:
+            B, T, _ = features.shape
+            coords = features[:, :, :183].reshape(B, T, 61, 3)
+            gcn_out = self.gcn(coords) # (B, T, 61, gcn_out_channels)
+            gcn_out_flat = gcn_out.reshape(B, T, -1) # (B, T, 61 * gcn_out_channels)
+            
+            if features.shape[-1] > 183:
+                flags = features[:, :, 183:]
+                gcn_out_flat = torch.cat([gcn_out_flat, flags], dim=-1)
+                
+            x = self.input_projection(gcn_out_flat)
+        else:
+            x = self.input_projection(features)       # (B, T, d_model)
 
-        packed = pack_padded_sequence(
-            hand_features,
-            lengths,
-            batch_first=True,
-            enforce_sorted=False
-        )
-
-        packed_out, _ = self.temporal_encoder(packed)
-
-        x, _ = pad_packed_sequence(
-            packed_out,
-            batch_first=True,
-            total_length=hand_features.size(1)
-        )
-
-        x = self.input_projection(x)
-
-        x = self.pos_encoder(x)
-
+        x = self.pos_encoder(x)                    # (B, T, d_model)
         x = self.encoder(
             x,
-            src_key_padding_mask=~video_mask
-        )
+            src_key_padding_mask=~video_mask       # True = ignore (padding)
+        )                                           # (B, T, d_model)
+        x = self.encoder_norm(x)                   # (B, T, d_model)
 
         return x
 
-    def forward(
-        self,
-        hand_features,
-        text_ids=None,
-        video_mask=None
-    ):
+    def forward(self, features, labels=None, video_mask=None):
 
-        encoder_hidden_states = self.encode(
-            hand_features,
-            video_mask
+        x = self.encode(features, video_mask)
+
+        pooled = masked_mean_pool(x, video_mask.bool())
+
+        logits = self.classifier(pooled)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return ClassificationOutput(
+            loss=loss,
+            logits=logits
         )
-
-        # week encoder
-        # attension mask
-
-        outputs = self.mt5(
-            encoder_outputs=BaseModelOutput(
-                last_hidden_state=encoder_hidden_states
-            ),
-            labels=text_ids
-        )
-
-        return outputs
 
     @torch.no_grad()
-    def generate(
-        self,
-        hand_features,
-        video_mask=None,
-        max_length=64,
-        num_beams=4,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=3
-    ):
-
-        encoder_hidden_states = self.encode(
-            hand_features,
-            video_mask
-        )
-
-        encoder_outputs = BaseModelOutput(
-            last_hidden_state=encoder_hidden_states
-        )
-
-        return self.mt5.generate(
-            encoder_outputs=encoder_outputs,
-            max_length=max_length,
-            num_beams=num_beams,
-            repetition_penalty=repetition_penalty,
-            no_repeat_ngram_size=no_repeat_ngram_size
-        )
-
-class SignLanguageTranslator(nn.Module):
-
-    def __init__(
-        self,
-        input_dim=126,
-        pretrained_model="google/mt5-small",
-        dropout=0.1
-    ):
-        super().__init__()
-
-        self.mt5 = MT5ForConditionalGeneration.from_pretrained(pretrained_model)
-        d_model = self.mt5.config.d_model  # 512 for mt5-small
-
-        self.input_projection = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.GELU(),
-            nn.Linear(512, d_model),
-            nn.LayerNorm(d_model),
-            nn.Dropout(dropout)
-        )
-
-    def encode(self, hand_features, video_mask=None):
-
-        x = self.input_projection(hand_features)  # (B, T, d_model)
-        encoder_outputs = self.mt5.encoder(
-            inputs_embeds=x,
-            attention_mask=video_mask
-        )
-
-        return encoder_outputs.last_hidden_state
-
-    def forward(
-        self,
-        hand_features,
-        text_ids=None,
-        video_mask=None
-    ):
-
-        x = self.input_projection(hand_features)
-
-        outputs = self.mt5(
-            inputs_embeds=x,
-            attention_mask=video_mask,
-            labels=text_ids
-        )
-
-        return outputs
-
-    @torch.no_grad()
-    def generate(
-        self,
-        hand_features,
-        video_mask=None,
-        max_length=64,
-        num_beams=4,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=3
-    ):
-
-        x = self.input_projection(hand_features)
-
-        return self.mt5.generate(
-            inputs_embeds=x,
-            attention_mask=video_mask,
-            max_length=max_length,
-            num_beams=num_beams,
-            repetition_penalty=repetition_penalty,
-            no_repeat_ngram_size=no_repeat_ngram_size
-        )
+    def predict(self, features, video_mask=None, top_k=1):
+        logits = self.forward(
+            features,
+            labels=None,
+            video_mask=video_mask
+        ).logits
+        if top_k == 1:
+            return logits.argmax(dim=-1)
+        return logits.topk(k=top_k, dim=-1).indices

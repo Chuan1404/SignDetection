@@ -1,0 +1,267 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import json
+import cv2
+import numpy as np
+from tqdm import tqdm
+
+from src.utils.pose_detection import PoseDetection
+from src.utils.hand_detection import HandDetection
+from config import ROOT, WLASL_RAW_DATA
+
+SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+LABELS_PATH = os.path.join(ROOT, "datasets", "annotations", "wlasl_flat.json")
+
+with open(LABELS_PATH, "r", encoding="utf-8") as f:
+    label_entries = json.load(f)
+
+print(f"Total instances: {len(label_entries)}")
+
+for entry in tqdm(label_entries, total=len(label_entries)):
+
+    hand_detection = HandDetection()
+    pose_detection = PoseDetection()
+
+    video_id = entry["video_id"]
+    gloss = entry["gloss"]
+    print(video_id)
+    video_path = os.path.join(
+        WLASL_RAW_DATA,
+        f"{video_id}.mp4"
+    )
+
+    dir_name = os.path.join(
+        SAVE_DIR,
+        video_id
+    )
+
+    if not os.path.exists(video_path):
+        print("Missing:", video_path)
+        continue
+
+    cap = cv2.VideoCapture(video_path)
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps is None or fps <= 0:
+        fps = 25.0
+
+    frame_index = 0
+
+    right_hand_features = []
+    left_hand_features = []
+    pose_features = []
+
+    while True:
+
+        success, frame = cap.read()
+        if not success:
+            break
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        timestamp_ms = int(frame_index * 1000 / fps)
+
+        detection_hand_results = hand_detection.detect_video(
+            frame,
+            timestamp_ms
+        )
+        print(detection_hand_results)
+
+        detection_pose_results = pose_detection.detect_video(
+            frame,
+            timestamp_ms
+        )
+
+        # --------------------------------------------------
+        # HAND
+        # --------------------------------------------------
+
+        right_hand = np.zeros((21, 3), dtype=np.float32)
+        left_hand = np.zeros((21, 3), dtype=np.float32)
+
+        handedness = detection_hand_results.handedness
+        hand_landmarks = detection_hand_results.hand_landmarks
+
+        if hand_landmarks is not None and len(hand_landmarks) > 0:
+
+            for i, hand_info in enumerate(handedness):
+
+                if i >= len(hand_landmarks):
+                    continue
+
+                category = hand_info[0]
+
+                coords = np.array(
+                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]],
+                    dtype=np.float32
+                )
+                print(coords)
+
+                coords = np.nan_to_num(coords)
+
+                # MediaPipe:
+                # index == 0 -> Right
+                # index == 1 -> Left
+
+                if category.index == 0:
+                    right_hand = coords
+
+                elif category.index == 1:
+                    left_hand = coords
+
+        # --------------------------------------------------
+        # POSE
+        # --------------------------------------------------
+
+        pose_coords = np.zeros((33, 3), dtype=np.float32)
+
+        if (
+            detection_pose_results.pose_landmarks is not None
+            and len(detection_pose_results.pose_landmarks) > 0
+        ):
+
+            pose_landmarks = detection_pose_results.pose_landmarks[0]
+
+            pose_coords = np.array(
+                [[lm.x, lm.y, lm.z] for lm in pose_landmarks],
+                dtype=np.float32
+            )
+
+            pose_coords = np.nan_to_num(pose_coords)
+
+        # --------------------------------------------------
+        # SAVE FRAME FEATURES
+        # --------------------------------------------------
+
+        right_hand_features.append(
+            right_hand.flatten()
+        )
+
+        left_hand_features.append(
+            left_hand.flatten()
+        )
+
+        pose_features.append(
+            pose_coords.flatten()
+        )
+
+        frame_index += 1
+
+    cap.release()
+    hand_detection.close()
+
+    if len(right_hand_features) == 0:
+        print(f"Skip empty video: {video_id}")
+        continue
+
+    # --------------------------------------------------
+    # TO NUMPY
+    # --------------------------------------------------
+
+    right_hand_features = np.array(
+        right_hand_features,
+        dtype=np.float32
+    )
+
+    left_hand_features = np.array(
+        left_hand_features,
+        dtype=np.float32
+    )
+
+    pose_features = np.array(
+        pose_features,
+        dtype=np.float32
+    )
+
+    right_hand_features = np.nan_to_num(
+        right_hand_features
+    )
+
+    left_hand_features = np.nan_to_num(
+        left_hand_features
+    )
+
+    pose_features = np.nan_to_num(
+        pose_features
+    )
+
+    # --------------------------------------------------
+    # DROP FRAMES WHERE NEITHER HAND WAS DETECTED
+    # --------------------------------------------------
+    # A frame is only useful if at least one hand (left or right) has a
+    # non-zero landmark vector. Frames where both hands are all-zero
+    # (MediaPipe failed to detect any hand) add no signal for sign
+    # language and just introduce noisy padding frames into training.
+    has_right_hand = np.any(right_hand_features != 0, axis=1)
+    has_left_hand  = np.any(left_hand_features != 0, axis=1)
+    valid_frame_mask = has_right_hand | has_left_hand
+
+    if not np.any(valid_frame_mask):
+        print(f"Skip video with no hand detected in any frame: {video_id}")
+        continue
+
+    num_dropped = int((~valid_frame_mask).sum())
+    if num_dropped > 0:
+        print(f"  Dropping {num_dropped}/{len(valid_frame_mask)} frames with no hand detected")
+
+    right_hand_features = right_hand_features[valid_frame_mask]
+    left_hand_features  = left_hand_features[valid_frame_mask]
+    pose_features       = pose_features[valid_frame_mask]
+
+    # --------------------------------------------------
+    # SAVE
+    # --------------------------------------------------
+
+    os.makedirs(
+        dir_name,
+        exist_ok=True
+    )
+
+    np.save(
+        os.path.join(
+            dir_name,
+            "right_hand.npy"
+        ),
+        right_hand_features
+    )
+
+    np.save(
+        os.path.join(
+            dir_name,
+            "left_hand.npy"
+        ),
+        left_hand_features
+    )
+
+    np.save(
+        os.path.join(
+            dir_name,
+            "pose.npy"
+        ),
+        pose_features
+    )
+
+    # Save gloss for manual inspection / debugging convenience —
+    # WLASLLandmarksDataset still reads the main label from the labels
+    # JSON, not from this file, during training
+    with open(
+        os.path.join(
+            dir_name,
+            "gloss.txt"
+        ),
+        "w",
+        encoding="utf-8"
+    ) as f:
+        f.write(gloss.strip())
+
+    print(
+        f"Saved: {video_id} ({gloss}) | "
+        f"RH={right_hand_features.shape} "
+        f"LH={left_hand_features.shape} "
+        f"POSE={pose_features.shape}"
+    )
+
+print("FINISH")

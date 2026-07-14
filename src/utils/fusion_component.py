@@ -1,147 +1,87 @@
-import cv2
 import numpy as np
 
-class ExtractingFusionComponent:
-    def __init__(self):
-        pass
+# Pose landmark indices removed after merging wrists with hand landmarks.
+# 17,19,21 = left hand pinky/index/thumb tips (redundant with detailed hand landmarks)
+# 18,20,22 = right hand pinky/index/thumb tips (redundant with detailed hand landmarks)
+# 25-31   = leg/foot points (not needed for upper-body / sign-language tasks)
+_REMOVE_POSE_IDX = [17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32]
 
-    # def _get_root(self, pose):
-    #     # hip center as root
-    #     left_hip = pose[23]
-    #     right_hip = pose[24]
-    #     return (left_hip + right_hip) / 2
+_LEFT_WRIST_IDX = 15
+_RIGHT_WRIST_IDX = 16
+_LEFT_HIP_IDX = 23
+_RIGHT_HIP_IDX = 24
+_LEFT_SHOULDER_IDX = 11
+_RIGHT_SHOULDER_IDX = 12
 
-    def fuse(self, pose_results, hand_results):
-        handedness = hand_results.handedness
-        hand_landmarks = hand_results.hand_landmarks
-
-        right_hand = np.zeros((21, 3), dtype=np.float32)
-        left_hand = np.zeros((21, 3), dtype=np.float32)
-
-        if hand_landmarks is not None and len(hand_landmarks) > 0:
-
-            for i, hand_info in enumerate(handedness):
-                category = hand_info[0]
-
-                coords = np.array(
-                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]],
-                    dtype=np.float32
-                )
-
-                coords = np.nan_to_num(coords)
-
-                if category.index == 0:
-                    right_hand = coords
-
-                elif category.index == 1:
-                    left_hand = coords
-
-        # remove 18th, 20th, 22th pose points, merge 16th point with 0th right hand point
-        # remove 17th, 19th, 21th pose points, merge 15th point with 0th point of left hand
-        # remove unneeded points (25-31)
-
-        pose_landmarks = pose_results.pose_landmarks[0]
-        pose_coords = np.array(
-            [[lm.x, lm.y, lm.z] for lm in pose_landmarks],
-            dtype=np.float32
-        )
-
-        pose_coords = np.nan_to_num(pose_coords)
-        # root = self._get_root(pose_coords)
-        # pose_coords = pose_coords - root
-        # left_hand = left_hand - root
-        # right_hand = right_hand - root
-
-        # Replace wrist by hand wrist
-        if np.any(right_hand):
-            pose_coords[16] = right_hand[0]  # right wrist
-
-        if np.any(left_hand):
-            pose_coords[15] = left_hand[0]  # left wrist
-
-        # Remove redundant hand points in pose
-        remove_idx = [17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31]
-
-        pose_coords = np.delete(
-            pose_coords,
-            remove_idx,
-            axis=0
-        )
-
-        # Final landmarks
-        fused_landmarks = np.concatenate(
-            [
-                pose_coords,
-                left_hand,
-                right_hand
-            ],
-            axis=0
-        )
-
-        return fused_landmarks
-
-    def draw_landmarks_on_image(self, rgb_image, detection_result):
-        annotated = rgb_image.copy()
-
-        h, w = annotated.shape[:2]
-
-        for x, y, z in detection_result:
-            px = int(x * w)
-            py = int(y * h)
-
-            cv2.circle(
-                annotated,
-                (px, py),
-                radius=2,
-                color=(0, 255, 0),
-                thickness=-1
-            )
-
-        return annotated
-
+_EPS = 1e-6
 
 class FusionComponent:
+
     def __init__(self):
         pass
 
     def fuse(self, pose_feature, hand_feature):
+        """
+        Fuses pose and hand features over all frames.
+        
+        Args:
+            pose_feature: Array-like of shape (T, 33, 3) or (T, 99)
+            hand_feature: Array-like of shape (T, 126)
+            
+        Returns:
+            fused_features: NumPy array of shape (T, 185) where the last 2 columns
+                            are [left_present, right_present] flags.
+        """
+        pose = np.asarray(pose_feature, dtype=np.float32)
+        hand = np.asarray(hand_feature, dtype=np.float32)
+        
+        T = pose.shape[0]
+        
+        # Reshape to 3D coordinate tensors
+        left_hand = hand[:, :63].reshape(T, 21, 3).copy()
+        right_hand = hand[:, 63:].reshape(T, 21, 3).copy()
+        pose = pose.reshape(T, 33, 3).copy()
 
-        T, _ = pose_feature.shape
-        fused_features = []
+        # 1. Detect hand presence before normalization (any non-zero coordinate)
+        has_left = np.any(left_hand != 0.0, axis=(1, 2))   # (T,)
+        has_right = np.any(right_hand != 0.0, axis=(1, 2)) # (T,)
 
-        for i in range(T):
-            left_hand = hand_feature[i][:63].reshape(21, 3)
-            right_hand = hand_feature[i][63:].reshape(21, 3)
-            pose = pose_feature[i].reshape(33, 3)
+        left_present = has_left.astype(np.float32).reshape(T, 1)
+        right_present = has_right.astype(np.float32).reshape(T, 1)
 
-            # remove 18th, 20th, 22th pose points, merge 16th point with 0th right hand point
-            # remove 17th, 19th, 21th pose points, merge 15th point with 0th point of left hand
-            # remove unneeded points (25-31)
+        # 2. Normalize pose and hands coordinates relative to hip root and shoulder scale
+        root = (pose[:, _LEFT_HIP_IDX] + pose[:, _RIGHT_HIP_IDX]) / 2.0  # (T, 3)
+        scale = np.linalg.norm(
+            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
+            axis=-1,
+            keepdims=True
+        )  # (T, 1)
+        scale = np.where(scale > _EPS, scale, 1.0)
 
-            # Replace wrist by hand wrist
-            pose[16] = right_hand[0]  # right wrist
+        # Reshape for broadcasting
+        root = root[:, np.newaxis, :]    # (T, 1, 3)
+        scale = scale[:, np.newaxis, :]  # (T, 1, 1)
 
-            pose[15] = left_hand[0]  # left wrist
+        pose = (pose - root) / scale
+        left_hand = (left_hand - root) / scale
+        right_hand = (right_hand - root) / scale
 
-            # Remove redundant hand points in pose
-            remove_idx = [17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31]
+        # 3. If a hand is missing, force all its coordinates to exactly 0.0 (pelvis root)
+        left_hand = np.where(has_left[:, np.newaxis, np.newaxis], left_hand, 0.0)
+        right_hand = np.where(has_right[:, np.newaxis, np.newaxis], right_hand, 0.0)
 
-            pose = np.delete(
-                pose,
-                remove_idx,
-                axis=0
-            )
+        # 4. Merge wrist coordinate from hand detection into pose wrists
+        pose[:, _RIGHT_WRIST_IDX] = right_hand[:, 0]
+        pose[:, _LEFT_WRIST_IDX] = left_hand[:, 0]
 
-            fused_feature = np.concatenate(
-                [
-                    pose, # 20
-                    left_hand, # 21
-                    right_hand # 21
-                ],
-                axis=0
-            )
+        # 5. Remove redundant/unused landmarks from pose
+        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)  # axis=1 represents landmarks
 
-            fused_features.append(fused_feature)
+        # 6. Concatenate along landmarks dimension
+        fused_coords = np.concatenate([pose, left_hand, right_hand], axis=1) # (T, 61, 3)
+        fused_flat = fused_coords.reshape(T, -1) # (T, 183)
 
-        fused_features = np.array(fused_features)
-        return fused_features
+        # 7. Append the global hand presence flags
+        fused_final = np.concatenate([fused_flat, left_present, right_present], axis=1) # (T, 185)
+
+        return fused_final

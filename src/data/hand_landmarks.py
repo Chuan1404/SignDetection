@@ -5,16 +5,20 @@ import torch
 
 class HandLandmarksDataset(Dataset):
 
-    def __init__(self, feature_dir, vocabulary, fusion_component):
+    def __init__(self, feature_dir, vocabulary, fusion_component, max_samples=1000):
         self.vocabulary = vocabulary
         self.feature_dir = feature_dir
         self.fusion_component = fusion_component
 
         self.samples = []
 
-        for index, video_name in enumerate(os.listdir(feature_dir)):
-            if index > 1000:
+        all_video_names = sorted(os.listdir(feature_dir))  # sort để đảm bảo thứ tự cố định
+
+        for index, video_name in enumerate(all_video_names):
+            # max_samples=None nghĩa là load toàn bộ, không giới hạn
+            if max_samples is not None and index >= max_samples:
                 break
+
             video_dir = os.path.join(
                 feature_dir,
                 video_name
