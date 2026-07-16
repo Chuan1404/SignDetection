@@ -14,7 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Subset
 
 from src.utils import FusionComponent
-from src.models.SLT_model import SignLanguageTranslatorV3, SignLanguageTranslatorV1
+from src.models.SLT_model import SignLanguageTranslatorV4
 from config import ROOT
 
 
@@ -27,6 +27,7 @@ WARMUP_EPOCHS = 5
 TOP_K       = 5       # for top-k accuracy reporting
 VAL_RATIO   = 0.1     # per-class fraction held out for validation
 SEED        = 42      # for reproducible shuffling/splitting
+GCN_OUT_CHANNELS = 32  # per-partition GCN output width, see SpatialGraphConv
 
 
 FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
@@ -192,28 +193,29 @@ def main():
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
         collate_fn=collate_fn,
-        num_workers=2, pin_memory=True
+        num_workers=0, pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, batch_size=BATCH_SIZE, shuffle=False,
         collate_fn=collate_fn,
-        num_workers=2, pin_memory=True
+        num_workers=0, pin_memory=True
     )
 
     feature, _ = train_dataset[0]
 
     model_kwargs = dict(
-        input_dim=feature.shape[-1],
-        hidden_dim=256,
+        # input_dim=feature.shape[-1],
+        # hidden_dim=256,
         # num_encoder_layers=6,
         # nhead=8,
         # dim_feedforward=2048,
         dropout=0.1,
         # max_seq_len=5000,
-        num_classes=num_classes
+        num_classes=num_classes,
+        # gcn_out_channels=GCN_OUT_CHANNELS
     )
 
-    model = SignLanguageTranslatorV1(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV4(**model_kwargs).to(DEVICE)
 
     total_params     = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -266,7 +268,7 @@ def main():
                 "val_top1_acc": val_top1_acc,
                 "val_topk_acc": val_topk_acc,
                 "model_kwargs": model_kwargs,
-            }, os.path.join(SAVE_DIR, "26_07_08_best.pt"))
+            }, os.path.join(SAVE_DIR, "26_07_15_v4_gcn.pt"))
             print(f"✓ Saved best model  (val_loss={best_loss:.4f})")
         else:
             no_improve += 1

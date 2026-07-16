@@ -24,7 +24,7 @@ SEED        = 42
 
 FEATURE_DIR  = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
 ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "test.json")
-MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_08_best.pt")
+MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_15_best.pt")
 
 fusion_component = FusionComponent()
 
@@ -152,7 +152,7 @@ def main():
     idx2gloss = {v: k for k, v in gloss2idx.items()}
 
     # Load model
-    model = SignLanguageTranslatorV1(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV3(**model_kwargs).to(DEVICE)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
