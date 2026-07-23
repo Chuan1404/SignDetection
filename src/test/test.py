@@ -18,13 +18,13 @@ from src.models.SLT_model import SignLanguageTranslatorV3, SignLanguageTranslato
 from config import ROOT
 
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE  = 16
+BATCH_SIZE  = 8
 TOP_K       = 5
 SEED        = 42
 
 FEATURE_DIR  = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
 ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "test.json")
-MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_15_best.pt")
+MODEL_PATH   = os.path.join(ROOT, "outputs", "models", "26_07_23.pt")
 
 fusion_component = FusionComponent()
 

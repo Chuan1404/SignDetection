@@ -7,27 +7,27 @@ from collections import defaultdict
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-from src.data.WSASL_raw import WLASLLandmarksDataset
+from src.data.WSASL_raw import WLASLLandmarksDataset, AugmentedSkeletonDataset, SkeletonAugmentor
 import torch
 from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Subset
 
 from src.utils import FusionComponent
-from src.models.SLT_model import SignLanguageTranslatorV4
+from src.models.SLT_model import SignLanguageTranslatorV4, SignLanguageTranslatorV5, SignLanguageTranslatorV3
 from config import ROOT
 
 
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE  = 8
-EPOCHS      = 100
-LR          = 1e-4   # single LR — no pretrained submodule to protect anymore
-PATIENCE    = 10
+EPOCHS      = 200
+LR          = 1e-4
+PATIENCE    = 5
 WARMUP_EPOCHS = 5
-TOP_K       = 5       # for top-k accuracy reporting
-VAL_RATIO   = 0.1     # per-class fraction held out for validation
-SEED        = 42      # for reproducible shuffling/splitting
-GCN_OUT_CHANNELS = 32  # per-partition GCN output width, see SpatialGraphConv
+TOP_K       = 5
+VAL_RATIO   = 0.25
+SEED        = 42
+GCN_OUT_CHANNELS = 32
 
 
 FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
@@ -36,7 +36,6 @@ SAVE_DIR    = os.path.join(ROOT, "outputs", "models")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 fusion_component = FusionComponent()
-
 
 def stratified_split(sample_labels, val_ratio=0.1, seed=42):
     rng = random.Random(seed)
@@ -56,7 +55,6 @@ def stratified_split(sample_labels, val_ratio=0.1, seed=42):
     rng.shuffle(val_indices)
 
     return train_indices, val_indices
-
 
 def collate_fn(batch):
     features, labels = [], []
@@ -78,13 +76,11 @@ def collate_fn(batch):
 
     return features, labels, video_mask
 
-
 def get_lr_scale(epoch, warmup_epochs):
     """Linear warmup: epoch 0..warmup_epochs-1 -> LR ramps from 0 to 1.0"""
     if epoch < warmup_epochs:
         return (epoch + 1) / warmup_epochs
     return 1.0
-
 
 def train_one_epoch(model, loader, optimizer):
 
@@ -117,7 +113,6 @@ def train_one_epoch(model, loader, optimizer):
         pbar.set_postfix(loss=f"{loss.item():.4f}")
 
     return total_loss / len(loader)
-
 
 def validate(model, loader, top_k=5):
 
@@ -159,7 +154,6 @@ def validate(model, loader, top_k=5):
 
     return avg_loss, top1_acc, topk_acc
 
-
 def main():
     with open(os.path.join(ROOT, "datasets", "annotations", "gloss2idx.json"), "r") as f:
         gloss2idx = json.load(f)
@@ -179,8 +173,11 @@ def main():
         sample_labels, val_ratio=VAL_RATIO, seed=SEED
     )
 
-    train_dataset = Subset(base_dataset, train_indices)
-    val_dataset   = Subset(base_dataset, val_indices)
+    # train_dataset = Subset(base_dataset, train_indices)
+    train_dataset = AugmentedSkeletonDataset(
+        Subset(base_dataset, train_indices), SkeletonAugmentor()
+    )
+    val_dataset   = Subset(base_dataset, train_indices)
 
     print(f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}")
 
@@ -209,13 +206,13 @@ def main():
         # num_encoder_layers=6,
         # nhead=8,
         # dim_feedforward=2048,
-        dropout=0.1,
+        dropout=0.2,
         # max_seq_len=5000,
         num_classes=num_classes,
         # gcn_out_channels=GCN_OUT_CHANNELS
     )
 
-    model = SignLanguageTranslatorV4(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV3(**model_kwargs).to(DEVICE)
 
     total_params     = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -268,7 +265,7 @@ def main():
                 "val_top1_acc": val_top1_acc,
                 "val_topk_acc": val_topk_acc,
                 "model_kwargs": model_kwargs,
-            }, os.path.join(SAVE_DIR, "26_07_15_v4_gcn.pt"))
+            }, os.path.join(SAVE_DIR, "26_07_23.pt"))
             print(f"✓ Saved best model  (val_loss={best_loss:.4f})")
         else:
             no_improve += 1
@@ -277,7 +274,6 @@ def main():
             if no_improve >= PATIENCE:
                 print(f"\n⚑ Early stopping at epoch {epoch+1}")
                 break
-
 
 if __name__ == "__main__":
     main()

@@ -45,7 +45,7 @@ class HandDetection:
         # Video
         video_options = vision.HandLandmarkerOptions(
             base_options=base_options,
-            min_hand_detection_confidence = 0.3,
+            min_hand_detection_confidence = 0.1,
             num_hands=2,
             running_mode=vision.RunningMode.VIDEO)
         self.video_detector = vision.HandLandmarker.create_from_options(video_options)

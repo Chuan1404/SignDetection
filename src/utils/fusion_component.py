@@ -1,6 +1,6 @@
 import numpy as np
 
-_REMOVE_POSE_IDX = [17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32]
+_REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32]
 
 _LEFT_WRIST_IDX = 15
 _RIGHT_WRIST_IDX = 16

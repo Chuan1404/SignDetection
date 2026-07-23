@@ -11,7 +11,8 @@ class PoseDetection:
         base_options = python.BaseOptions(model_asset_path=r'../../pretrained/pose_landmarker_heavy.task')
         options = vision.PoseLandmarkerOptions(
             running_mode=vision.RunningMode.VIDEO,
-            base_options=base_options)
+            base_options=base_options,
+        min_pose_detection_confidence=0)
         self.pose_detector = vision.PoseLandmarker.create_from_options(options)
 
     def detect_video(self, frame, timestamp_ms):
