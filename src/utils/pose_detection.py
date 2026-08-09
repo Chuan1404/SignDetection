@@ -7,12 +7,12 @@ mp_drawing_styles = vision.drawing_styles
 mp_drawing_utils = vision.drawing_utils
 
 class PoseDetection:
-    def __init__(self):
+    def __init__(self, min_pose_detection_confidence=0.2):
         base_options = python.BaseOptions(model_asset_path=r'../../pretrained/pose_landmarker_heavy.task')
         options = vision.PoseLandmarkerOptions(
             running_mode=vision.RunningMode.VIDEO,
             base_options=base_options,
-        min_pose_detection_confidence=0)
+            min_pose_detection_confidence=min_pose_detection_confidence)
         self.pose_detector = vision.PoseLandmarker.create_from_options(options)
 
     def detect_video(self, frame, timestamp_ms):
@@ -24,8 +24,25 @@ class PoseDetection:
     def draw_landmarks_on_image(self, rgb_image, detection_result):
         pose_landmarks_list = detection_result.pose_landmarks
         annotated_image = np.copy(rgb_image)
+        h, w, _ = annotated_image.shape
 
-        pose_landmark_style = mp_drawing_styles.get_default_pose_landmarks_style()
+        scale = w / 640.0
+        radius = max(1, int(2 * scale))
+        thickness = max(1, int(1 * scale))
+
+        # Phóng to các điểm
+        landmark_style = mp_drawing_utils.DrawingSpec(
+            color=(0, 0, 255),  # đỏ
+            thickness=thickness,
+            circle_radius=radius  # <-- tăng kích thước điểm
+        )
+
+        # Đường nối
+        connection_style = mp_drawing_utils.DrawingSpec(
+            color=(0, 255, 0),
+            thickness=thickness  # <-- tăng độ dày đường
+        )
+
         # for landmark_style in pose_landmark_style.values():
         #     landmark_style.thickness = 1
         #     landmark_style.circle_radius = 1
@@ -36,7 +53,7 @@ class PoseDetection:
                 image=annotated_image,
                 landmark_list=pose_landmarks,
                 connections=vision.PoseLandmarksConnections.POSE_LANDMARKS,
-                landmark_drawing_spec=pose_landmark_style,
-                connection_drawing_spec=pose_connection_style,)
+                landmark_drawing_spec=landmark_style,
+                connection_drawing_spec=connection_style,)
 
         return annotated_image

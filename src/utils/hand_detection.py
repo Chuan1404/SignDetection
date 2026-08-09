@@ -34,7 +34,7 @@ FINGER_COLORS = {
     "Wrist": (0, 0, 0)
 }
 class HandDetection:
-    def __init__(self):
+    def __init__(self, min_hand_detection_confidence=0.2):
         self.prev_hand_crops = hand_crops = {
             "Left": None,
             "Right": None
@@ -45,7 +45,7 @@ class HandDetection:
         # Video
         video_options = vision.HandLandmarkerOptions(
             base_options=base_options,
-            min_hand_detection_confidence = 0.1,
+            min_hand_detection_confidence = min_hand_detection_confidence,
             num_hands=2,
             running_mode=vision.RunningMode.VIDEO)
         self.video_detector = vision.HandLandmarker.create_from_options(video_options)
@@ -117,6 +117,10 @@ class HandDetection:
         annotated_image = np.copy(rgb_image)
         height, width, _ = annotated_image.shape
 
+        scale = width / 640.0
+        thickness = max(1, int(1 * scale))
+        radius = max(1, int(2 * scale))
+
         for idx in range(len(hand_landmarks_list)):
             hand_landmarks = hand_landmarks_list[idx]
 
@@ -137,7 +141,7 @@ class HandDetection:
                         landmark_points[start_idx],
                         landmark_points[end_idx],
                         color,
-                        1
+                        thickness=thickness
                     )
 
                     start_idx = indices[i]
@@ -148,7 +152,7 @@ class HandDetection:
 
                 for i in indices:
                     x, y = landmark_points[i]
-                    cv2.circle(annotated_image, (x, y), 2, color, -1)
+                    cv2.circle(annotated_image, (x, y), radius, color, -1)
         return annotated_image
 
     def close(self):

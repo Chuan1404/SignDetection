@@ -3,76 +3,96 @@ import json
 
 from config import ROOT
 
-WLASL_JSON_PATH = os.path.join(
-    ROOT,
-    "datasets",
-    "annotations",
-    "WLASL_v0_3.json"
+NSLT_JSON_PATH = os.path.join(
+    ROOT, "datasets", "raw", "WLASL", "nslt_2000.json"
+)
+
+WLASL_FULL_JSON_PATH = os.path.join(
+    ROOT, "datasets", "raw", "WLASL", "WLASL_v0_3.json"
 )
 
 MISSING_PATH = os.path.join(
-    ROOT,
-    "datasets",
-    "annotations",
-    "missing.txt"
+    ROOT, "datasets", "annotations", "missing.txt"
 )
 
 SAVE_DIR = os.path.join(
-    ROOT,
-    "datasets",
-    "annotations"
+    ROOT, "datasets", "annotations", "WLASL2000"
 )
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
-def flatten_wlasl():
+def build_video_id_to_gloss(wlasl_full_data):
+    """video_id -> gloss, tra từ file metadata gốc WLASL_v0_3.json"""
+    video_id2gloss = {}
+    for gloss_entry in wlasl_full_data:
+        gloss = gloss_entry["gloss"]
+        for instance in gloss_entry["instances"]:
+            video_id2gloss[instance["video_id"]] = gloss
+    return video_id2gloss
 
-    with open(WLASL_JSON_PATH, "r", encoding="utf-8") as f:
-        wlasl_data = json.load(f)
 
-    with open(MISSING_PATH, "r", encoding="utf-8") as f:
-        missing_ids = set(f.read().split())
+def flatten_nslt():
+
+    with open(NSLT_JSON_PATH, "r", encoding="utf-8") as f:
+        nslt_data = json.load(f)
+
+    with open(WLASL_FULL_JSON_PATH, "r", encoding="utf-8") as f:
+        wlasl_full_data = json.load(f)
+
+    video_id2gloss = build_video_id_to_gloss(wlasl_full_data)
+
+    missing_ids = set()
+    if os.path.exists(MISSING_PATH):
+        with open(MISSING_PATH, "r", encoding="utf-8") as f:
+            missing_ids = set(f.read().split())
 
     train_entries = []
     val_entries = []
     test_entries = []
 
     skipped = 0
-
+    not_found_in_full = []
     all_glosses = set()
 
-    for gloss_entry in wlasl_data:
+    for video_id, info in nslt_data.items():
 
-        gloss = gloss_entry["gloss"]
+        if video_id in missing_ids:
+            skipped += 1
+            continue
+
+        gloss = video_id2gloss.get(video_id)
+        if gloss is None:
+            not_found_in_full.append(video_id)
+            continue
+
+        class_id, start_frame, end_frame = info["action"]
         all_glosses.add(gloss)
 
-        for instance in gloss_entry["instances"]:
+        sample = {
+            "video_id": video_id,
+            "gloss": gloss,
+            "class_id": class_id,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+        }
 
-            video_id = instance["video_id"]
+        split = info["subset"].lower()
 
-            if video_id in missing_ids:
-                skipped += 1
-                continue
+        if split == "train" or split == "val":
+            train_entries.append(sample)
 
-            sample = {
-                "video_id": video_id,
-                "gloss": gloss
-            }
+        # elif split == "val":
+        #     val_entries.append(sample)
 
-            split = instance["split"].lower()
+        elif split == "test":
+            test_entries.append(sample)
 
-            if split == "train" or split == "val":
-                train_entries.append(sample)
-
-            elif split == "test":
-                test_entries.append(sample)
-
-            else:
-                print(f"Unknown split: {split}")
+        else:
+            print(f"Unknown split: {split} (video_id={video_id})")
 
     # -------------------------------------------------
-    # Build vocabulary
+    # Build vocabulary từ gloss thật (a-z), không phải class_id số
     # -------------------------------------------------
 
     gloss_list = sorted(all_glosses)
@@ -87,6 +107,9 @@ def flatten_wlasl():
         for gloss, idx in gloss2idx.items()
     }
 
+    for sample in train_entries + test_entries:
+        sample["label_id"] = gloss2idx[sample["gloss"]]
+
     # -------------------------------------------------
     # Save annotation
     # -------------------------------------------------
@@ -94,8 +117,8 @@ def flatten_wlasl():
     with open(os.path.join(SAVE_DIR, "train.json"), "w", encoding="utf-8") as f:
         json.dump(train_entries, f, indent=2, ensure_ascii=False)
 
-    # with open(os.path.join(SAVE_DIR, "val.json"), "w", encoding="utf-8") as f:
-    #     json.dump(val_entries, f, indent=2, ensure_ascii=False)
+    with open(os.path.join(SAVE_DIR, "val.json"), "w", encoding="utf-8") as f:
+        json.dump(val_entries, f, indent=2, ensure_ascii=False)
 
     with open(os.path.join(SAVE_DIR, "test.json"), "w", encoding="utf-8") as f:
         json.dump(test_entries, f, indent=2, ensure_ascii=False)
@@ -107,16 +130,19 @@ def flatten_wlasl():
         json.dump(idx2gloss, f, indent=2, ensure_ascii=False)
 
     print("=" * 60)
-    print("WLASL flattened successfully")
+    print("nslt_100.json flattened successfully (gloss từ WLASL_v0_3.json)")
     print("=" * 60)
-    print(f"Glosses        : {len(gloss_list)}")
-    print(f"Missing videos : {skipped}")
-    print(f"Train samples  : {len(train_entries)}")
-    # print(f"Val samples    : {len(val_entries)}")
-    print(f"Test samples   : {len(test_entries)}")
-    print(f"Vocabulary     : {len(gloss2idx)}")
+    print(f"Glosses            : {len(gloss_list)}")
+    print(f"Missing videos     : {skipped}")
+    print(f"Not found in full  : {len(not_found_in_full)}")
+    if not_found_in_full:
+        print(f"  e.g. {not_found_in_full[:10]}")
+    print(f"Train samples      : {len(train_entries)}")
+    print(f"Val samples      : {len(val_entries)}")
+    print(f"Test samples       : {len(test_entries)}")
+    print(f"Vocabulary         : {len(gloss2idx)}")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    flatten_wlasl()
+    flatten_nslt()

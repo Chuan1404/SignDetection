@@ -8,9 +8,10 @@ from tqdm import tqdm
 
 from src.utils.pose_detection import PoseDetection
 from src.utils.hand_detection import HandDetection
+from src.utils.face_detection import FaceDetection
 from config import ROOT, WLASL_RAW_DATA
 
-SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
+SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 LABELS_PATH = os.path.join(ROOT, "datasets", "annotations", "wlasl_flat.json")
@@ -24,10 +25,11 @@ for entry in tqdm(label_entries, total=len(label_entries)):
 
     hand_detection = HandDetection()
     pose_detection = PoseDetection()
+    face_detection = FaceDetection()
+
 
     video_id = entry["video_id"]
     gloss = entry["gloss"]
-    print(video_id)
     video_path = os.path.join(
         WLASL_RAW_DATA,
         f"{video_id}.mp4"
@@ -53,6 +55,7 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     right_hand_features = []
     left_hand_features = []
     pose_features = []
+    lips_features = []
 
     while True:
 
@@ -68,9 +71,13 @@ for entry in tqdm(label_entries, total=len(label_entries)):
             frame,
             timestamp_ms
         )
-        print(detection_hand_results)
 
         detection_pose_results = pose_detection.detect_video(
+            frame,
+            timestamp_ms
+        )
+
+        detection_face_results = face_detection.detect_video(
             frame,
             timestamp_ms
         )
@@ -98,7 +105,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
                     [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]],
                     dtype=np.float32
                 )
-                print(coords)
 
                 coords = np.nan_to_num(coords)
 
@@ -133,6 +139,45 @@ for entry in tqdm(label_entries, total=len(label_entries)):
             pose_coords = np.nan_to_num(pose_coords)
 
         # --------------------------------------------------
+        # LIPS
+        # --------------------------------------------------
+
+        lip_coords = np.zeros((40, 3), dtype=np.float32)
+
+        if (
+                detection_face_results.face_landmarks is not None
+                and len(detection_face_results.face_landmarks) > 0
+        ):
+            face_landmarks = detection_face_results.face_landmarks[0]
+
+            LIPS = [
+                61, 146, 91, 181, 84, 17,
+                314, 405, 321, 375, 291,
+                185, 40, 39, 37, 0,
+                267, 269, 270, 409,
+                78, 95, 88, 178, 87,
+                14, 317, 402, 318,
+                324, 308, 191, 80,
+                81, 82, 13,
+                312, 311, 310, 415
+            ]
+
+            lip_coords = np.array(
+                [
+                    [
+                        lm.x,
+                        lm.y,
+                        lm.z
+                    ]
+                    for idx in LIPS
+                    for lm in [face_landmarks[idx]]
+                ],
+                dtype=np.float32
+            )
+
+            lip_coords = np.nan_to_num(lip_coords)
+
+        # --------------------------------------------------
         # SAVE FRAME FEATURES
         # --------------------------------------------------
 
@@ -146,6 +191,10 @@ for entry in tqdm(label_entries, total=len(label_entries)):
 
         pose_features.append(
             pose_coords.flatten()
+        )
+
+        lips_features.append(
+            lip_coords.flatten()
         )
 
         frame_index += 1
@@ -173,6 +222,11 @@ for entry in tqdm(label_entries, total=len(label_entries)):
 
     pose_features = np.array(
         pose_features,
+        dtype=np.float32
+    )
+
+    lips_features = np.array(
+        lips_features,
         dtype=np.float32
     )
 
@@ -210,6 +264,7 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     right_hand_features = right_hand_features[valid_frame_mask]
     left_hand_features  = left_hand_features[valid_frame_mask]
     pose_features       = pose_features[valid_frame_mask]
+    lips_features = lips_features[valid_frame_mask]
 
     # --------------------------------------------------
     # SAVE
@@ -244,6 +299,14 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         pose_features
     )
 
+    np.save(
+        os.path.join(
+            dir_name,
+            "lips.npy"
+        ),
+        lips_features
+    )
+
     # Save gloss for manual inspection / debugging convenience —
     # WLASLLandmarksDataset still reads the main label from the labels
     # JSON, not from this file, during training
@@ -261,7 +324,8 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         f"Saved: {video_id} ({gloss}) | "
         f"RH={right_hand_features.shape} "
         f"LH={left_hand_features.shape} "
-        f"POSE={pose_features.shape}"
+        f"POSE={pose_features.shape}",
+        f"LIPS={lips_features.shape}"
     )
 
 print("FINISH")
