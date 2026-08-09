@@ -22,14 +22,13 @@ def masked_mean_pool(x, video_mask):
 
 
 class SignLanguageTranslatorV1(nn.Module):
-
     def __init__(
         self,
-        input_dim=137,
-        hidden_dim=512,
+        input_dim=106,
+        hidden_dim=128,
         num_encoder_layers=6,
         nhead=8,
-        dim_feedforward=2048,
+        dim_feedforward=1024,
         dropout=0.2,
         max_seq_len=5000,
         num_classes=2000

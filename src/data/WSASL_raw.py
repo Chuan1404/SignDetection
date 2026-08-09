@@ -73,12 +73,12 @@ class WLASLLandmarksDataset(Dataset):
         hand_features = torch.concatenate([left_features, right_features], dim=-1)
         pose_features = torch.tensor(pose_features).float()
 
-        hand_normalize_features = self.normalize_features(hand_features)
-        features = self.fusion_component.fuse(pose_features, hand_normalize_features)
+        # hand_normalize_features = self.normalize_features(hand_features)
+        features = self.fusion_component.fuse(pose_features, hand_features)
         T = features.shape[0]
         features = features.reshape(T, -1)
 
-        return features, hand_normalize_features, label_id
+        return features, label_id
 
     def normalize_features(self, hand_features):
         T = hand_features.shape[0]

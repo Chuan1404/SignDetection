@@ -13,8 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
 from src.utils import FusionComponent
-from src.models.SLT_model import SignLanguageTranslatorV3, SignLanguageTranslatorV2, SignLanguageTranslatorV1, \
-    SignLanguageTranslatorV4
+from src.models.SLT_model import SignLanguageTranslatorV1
 from config import ROOT
 
 
@@ -22,7 +21,7 @@ DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE  = 8
 EPOCHS      = 300
 LR          = 1e-4
-PATIENCE    = 10
+PATIENCE    = 20
 TOP_K       = 3
 VAL_RATIO   = 0
 SEED        = 42
@@ -30,24 +29,22 @@ GCN_OUT_CHANNELS = 32
 
 
 FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
-ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
+ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 SAVE_DIR    = os.path.join(ROOT, "outputs", "models")
-SAVE_MODEL = os.path.join(SAVE_DIR, "v1_wlasl2000_26_08_09.pt")
+SAVE_MODEL = os.path.join(SAVE_DIR, "v1_wlasl100_26_08_09.pt")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 fusion_component = FusionComponent()
 
 def collate_fn(batch):
-    features, hand_features, labels = [], [], []
-    for feature, hand_feature, label in batch:
+    features, labels = [], []
+    for feature, label in batch:
         features.append(torch.as_tensor(feature, dtype=torch.float32))
-        hand_features.append(torch.as_tensor(hand_feature, dtype=torch.float32))
         labels.append(label)
 
     real_lengths = [f.shape[0] for f in features]
 
     features = pad_sequence(features, batch_first=True)
-    hand_features = pad_sequence(hand_features, batch_first=True)
 
     video_mask = (
         torch.arange(features.shape[1]).unsqueeze(0)
@@ -56,7 +53,7 @@ def collate_fn(batch):
 
     labels = torch.tensor(labels, dtype=torch.long)
 
-    return features, hand_features, labels, video_mask
+    return features, labels, video_mask
 
 def train_one_epoch(model, loader, optimizer):
 
@@ -65,10 +62,9 @@ def train_one_epoch(model, loader, optimizer):
 
     pbar = tqdm(loader, desc="Training")
 
-    for features, hand_normalize_features, labels, video_mask in pbar:
+    for features, labels, video_mask in pbar:
 
         features   = features.to(DEVICE, non_blocking=True)
-        hand_normalize_features = hand_normalize_features.to(DEVICE, non_blocking=True)
         labels     = labels.to(DEVICE, non_blocking=True)
         video_mask = video_mask.to(DEVICE, non_blocking=True)
 
@@ -76,7 +72,6 @@ def train_one_epoch(model, loader, optimizer):
 
         outputs = model(
             features,
-            # hand_normalize_features,
             labels=labels,
             video_mask=video_mask
         )
@@ -102,15 +97,13 @@ def validate(model, loader, top_k=5):
     total_samples = 0
 
     with torch.no_grad():
-        for features, hand_normalize_features, labels, video_mask in loader:
+        for features, labels, video_mask in loader:
             features   = features.to(DEVICE, non_blocking=True)
-            hand_normalize_features = hand_normalize_features.to(DEVICE, non_blocking=True)
             labels     = labels.to(DEVICE, non_blocking=True)
             video_mask = video_mask.to(DEVICE, non_blocking=True)
 
             outputs = model(
                 features,
-                # hand_normalize_features,
                 labels=labels,
                 video_mask=video_mask
             )
@@ -147,19 +140,19 @@ def main():
         FEATURE_DIR, ANNOTATION_DIR, fusion_component, mode="test", max_samples=None
     )
 
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    # train_dataset = base_train
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    train_dataset = base_train
     val_dataset   = base_val
 
     print(f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}")
 
-    train_classes = set(label for _, _,  label in base_train)
-    val_classes   = set(label for _, _, label in base_val)
+    train_classes = set(label for _,  label in base_train)
+    val_classes   = set(label for _, label in base_val)
     print(f"Classes in train: {len(train_classes)}/{num_classes}, "
           f"classes in val: {len(val_classes)}/{num_classes}, "
           f"val classes missing from train: {len(val_classes - train_classes)}")
 
-    feature, hand_normalize_features, _ = base_train[0]
+    feature, _ = base_train[0]
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
