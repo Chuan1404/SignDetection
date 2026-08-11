@@ -1,0 +1,5 @@
+hidden_dim: 128
+num_encoder_layers: 3
+dim_feedforward: 256
+dropout: 0
+num_classes: 100

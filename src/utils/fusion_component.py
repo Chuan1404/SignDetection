@@ -1,6 +1,7 @@
 import numpy as np
 from config import _REMOVE_POSE_IDX
 
+_NOSE_IDX = 0
 _LEFT_SHOULDER_IDX = 11
 _RIGHT_SHOULDER_IDX = 12
 
@@ -23,7 +24,7 @@ class FusionComponent:
         pose = pose.reshape(T, 33, 3)[:, :, :2].copy()
 
 
-        root = (pose[:, _LEFT_SHOULDER_IDX] + pose[:, _RIGHT_SHOULDER_IDX]) / 2.0
+        root = pose[:, _NOSE_IDX]
 
         scale = np.linalg.norm(
             pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],

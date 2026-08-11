@@ -242,29 +242,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         pose_features
     )
 
-    # --------------------------------------------------
-    # DROP FRAMES WHERE NEITHER HAND WAS DETECTED
-    # --------------------------------------------------
-    # A frame is only useful if at least one hand (left or right) has a
-    # non-zero landmark vector. Frames where both hands are all-zero
-    # (MediaPipe failed to detect any hand) add no signal for sign
-    # language and just introduce noisy padding frames into training.
-    has_right_hand = np.any(right_hand_features != 0, axis=1)
-    has_left_hand  = np.any(left_hand_features != 0, axis=1)
-    valid_frame_mask = has_right_hand | has_left_hand
-
-    if not np.any(valid_frame_mask):
-        print(f"Skip video with no hand detected in any frame: {video_id}")
-        continue
-
-    num_dropped = int((~valid_frame_mask).sum())
-    if num_dropped > 0:
-        print(f"  Dropping {num_dropped}/{len(valid_frame_mask)} frames with no hand detected")
-
-    right_hand_features = right_hand_features[valid_frame_mask]
-    left_hand_features  = left_hand_features[valid_frame_mask]
-    pose_features       = pose_features[valid_frame_mask]
-    lips_features = lips_features[valid_frame_mask]
 
     # --------------------------------------------------
     # SAVE

@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 
 class WLASLLandmarksDataset(Dataset):
 
-    def __init__(self, feature_dir, annotation_dir, fusion_component, mode="train", max_samples=1000):
+    def __init__(self, feature_dir, annotation_dir, fusion_component, mode="train"):
         self.feature_dir = feature_dir
         self.fusion_component = fusion_component
 
@@ -22,8 +22,6 @@ class WLASLLandmarksDataset(Dataset):
             all_video_names = sorted(video_ids)
 
         for index, video_name in enumerate(all_video_names):
-            if max_samples is not None and index >= max_samples:
-                break
 
             video_dir = os.path.join(
                 feature_dir,
@@ -66,6 +64,16 @@ class WLASLLandmarksDataset(Dataset):
         with open(item["text_path"], "r", encoding="utf-8") as f:
             gloss = f.read().strip()
         label_id = self.gloss2idx[gloss]
+
+        left_present = ~np.all(left_features == 0, axis=-1)  # (T,)
+        right_present = ~np.all(right_features == 0, axis=-1)  # (T,)
+        any_present = left_present | right_present
+
+        start_frame = int(np.argmax(any_present)) if any_present.any() else 0
+
+        left_features = left_features[start_frame:]
+        right_features = right_features[start_frame:]
+        pose_features = pose_features[start_frame:]
 
         left_features = torch.tensor(left_features).float()
         right_features = torch.tensor(right_features).float()

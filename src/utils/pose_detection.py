@@ -7,7 +7,7 @@ mp_drawing_styles = vision.drawing_styles
 mp_drawing_utils = vision.drawing_utils
 
 class PoseDetection:
-    def __init__(self, min_pose_detection_confidence=0.2):
+    def __init__(self, min_pose_detection_confidence=0.3):
         base_options = python.BaseOptions(model_asset_path=r'../../pretrained/pose_landmarker_heavy.task')
         options = vision.PoseLandmarkerOptions(
             running_mode=vision.RunningMode.VIDEO,

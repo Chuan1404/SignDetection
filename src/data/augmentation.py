@@ -2,7 +2,7 @@ import numpy as np
 
 from config import _N_POSE, _N_HAND
 
-_COORD_DIM = 2  # chỉ còn (x, y)
+_COORD_DIM = 2
 NUM_JOINTS = _N_POSE + 2 * _N_HAND
 
 _LEFT_HAND_START = _N_POSE
@@ -10,6 +10,7 @@ _RIGHT_HAND_START = _N_POSE + _N_HAND
 
 _POSE_LR_SWAP = {
     1: 2, 2: 1,  # vai trái <-> vai phải
+    3: 4, 4: 3
 }
 
 
@@ -31,7 +32,7 @@ class SkeletonAugmentor:
 
     def __init__(
         self,
-        mirror_prob=0.3,        # giảm xuống 0.3 vì một số ký hiệu phân biệt tay thuận
+        mirror_prob=0.3,
         rotation_deg=13.0,
         scale_range=(0.9, 1.1),
         shift_range=0.05,
@@ -63,12 +64,11 @@ class SkeletonAugmentor:
         coords = self._rotate(coords)
         coords = self._scale(coords)
         coords = self._shift(coords)
-        # coords = self._add_noise(coords)
+        coords = self._add_noise(coords)
 
-        # ---------- Thời gian ----------
-        # coords = self._temporal_crop(coords)
-        # coords = self._frame_dropout(coords)
-        # coords = self._speed_perturb(coords)
+        coords = self._temporal_crop(coords)
+        coords = self._frame_dropout(coords)
+        coords = self._speed_perturb(coords)
 
         return coords.reshape(coords.shape[0], -1).astype(np.float32)
 

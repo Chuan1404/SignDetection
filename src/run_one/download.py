@@ -1,179 +1,141 @@
-import os
+#!/usr/bin/env python3
+
+import argparse
 import json
+import logging
+import os
+import sys
 import time
-from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
 from config import ROOT
 
-WLASL_FULL_JSON_PATH = os.path.join(
-    ROOT, "datasets", "raw", "WLASL", "WLASL_v0_3.json"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
+log = logging.getLogger("wlasl")
 
-# !!! CHỈNH LẠI cho đúng thư mục đang chứa video hiện có của bạn !!!
-VIDEO_DIR = os.path.join(
-    ROOT, "datasets", "raw", "WLASL", "videos"
-)
-
-MISSING_PATH = os.path.join(
-    ROOT, "datasets", "annotations", "missing.txt"
-)
-
-os.makedirs(VIDEO_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(MISSING_PATH), exist_ok=True)
-
-REQUEST_TIMEOUT = 15
-NUM_RETRY = 2
-RETRY_SLEEP_SEC = 1.5
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
-}
+YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 
 
 def is_youtube(url: str) -> bool:
-    host = urlparse(url).netloc
-    return "youtube.com" in host or "youtu.be" in host
+    return any(h in url for h in YOUTUBE_HOSTS)
 
 
-def download_direct(url: str, out_path: str) -> bool:
-    """Tải trực tiếp bằng requests — dùng cho các nguồn serve file mp4 thẳng
-    (signingsavvy, handspeak, aslpro, aslbricks, spreadthesign, ...)."""
+def load_instances(json_path: str):
+    """Trả về list các dict instance, có thêm field 'gloss'."""
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    instances = []
+    for entry in data:
+        gloss = entry["gloss"]
+        for inst in entry["instances"]:
+            inst = dict(inst)
+            inst["gloss"] = gloss
+            instances.append(inst)
+    return instances
+
+
+def download_direct(url: str, dest: str, timeout: int = 30) -> bool:
+    """Tải file video trực tiếp (không phải YouTube) bằng requests."""
     try:
-        resp = requests.get(
-            url, stream=True, timeout=REQUEST_TIMEOUT, headers=HEADERS
-        )
-        resp.raise_for_status()
-
-        tmp_path = out_path + ".part"
-        with open(tmp_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    f.write(chunk)
-
-        if os.path.getsize(tmp_path) == 0:
-            os.remove(tmp_path)
-            return False
-
-        os.replace(tmp_path, out_path)
+        with requests.get(url, stream=True, timeout=timeout, headers={
+            "User-Agent": "Mozilla/5.0"
+        }) as r:
+            r.raise_for_status()
+            tmp = dest + ".part"
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    if chunk:
+                        f.write(chunk)
+            os.replace(tmp, dest)
         return True
-
     except Exception as e:
-        print(f"    [direct] lỗi: {e}")
+        log.warning(f"Lỗi tải trực tiếp {url}: {e}")
         return False
 
 
-_YOUTUBE_FALLBACK_CLIENTS = ["android_vr", "tv", "mweb", "web_safari"]
-
-
-def download_youtube(url: str, out_path: str) -> bool:
-    """Tải từ YouTube bằng yt-dlp (pip install -U yt-dlp).
-
-    YouTube liên tục đổi cơ chế xác thực player (JS challenge), khiến client
-    mặc định ("web") của yt-dlp hay bị lỗi "The page needs to be reloaded"
-    theo từng đợt. Thử lần lượt vài client khác trước khi bỏ cuộc.
-    """
+def download_youtube(url: str, dest: str) -> bool:
+    """Tải video YouTube bằng yt-dlp (cần: pip install yt-dlp)."""
     try:
         import yt_dlp
     except ImportError:
-        print("    [youtube] chưa cài yt-dlp -> pip install yt-dlp")
+        log.error("Chưa cài yt-dlp. Chạy: pip install yt-dlp")
         return False
 
-    base_opts = {
-        "outtmpl": out_path,
-        "format": "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+    ydl_opts = {
+        "outtmpl": dest,
+        "format": "mp4/best",
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": True,
-        "merge_output_format": "mp4",
+        "noprogress": True,
+        "retries": 3,
     }
-
-    last_err = None
-    for client in [None, *_YOUTUBE_FALLBACK_CLIENTS]:
-        opts = dict(base_opts)
-        if client is not None:
-            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
-
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                return True
-        except Exception as e:
-            last_err = e
-            continue
-
-    print(f"    [youtube] lỗi (đã thử {1 + len(_YOUTUBE_FALLBACK_CLIENTS)} client): {last_err}")
-    return False
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        return os.path.exists(dest)
+    except Exception as e:
+        log.warning(f"Lỗi tải YouTube {url}: {e}")
+        return False
 
 
-def download_one(url: str, out_path: str) -> bool:
-    for attempt in range(1, NUM_RETRY + 1):
-        ok = download_youtube(url, out_path) if is_youtube(url) else download_direct(url, out_path)
-        if ok:
-            return True
-        if attempt < NUM_RETRY:
-            time.sleep(RETRY_SLEEP_SEC)
-    return False
+def download_one(inst: dict, out_dir: str) -> tuple[str, bool, str]:
+    video_id = inst["video_id"]
+    url = inst["url"]
+    dest = os.path.join(out_dir, f"{video_id}.mp4")
+
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return video_id, True, "đã có sẵn, bỏ qua"
+
+    ok = download_youtube(url, dest) if is_youtube(url) else download_direct(url, dest)
+    return video_id, ok, url
 
 
-def download_missing_videos():
+def main():
+    parser = argparse.ArgumentParser(description="Tải video dataset WLASL")
+    parser.add_argument("--json", default=f"{os.path.join(ROOT, 'datasets', 'raw', 'WLASL', 'WLASL_v0_3.json')}", help="Đường dẫn file WLASL_v0_3.json")
+    parser.add_argument("--out", default=f"{os.path.join(ROOT, 'datasets', 'raw', 'WLASL', 'videos')}", help="Thư mục lưu video")
+    parser.add_argument("--workers", type=int, default=4, help="Số luồng tải song song")
+    parser.add_argument("--limit", type=int, default=0, help="Chỉ tải N video đầu (0 = tải hết, để test)")
+    args = parser.parse_args()
 
-    with open(WLASL_FULL_JSON_PATH, "r", encoding="utf-8") as f:
-        wlasl_data = json.load(f)
+    os.makedirs(args.out, exist_ok=True)
 
-    existing = set(os.listdir(VIDEO_DIR))
-    print(f"Thư mục video: {VIDEO_DIR}")
-    print(f"Đã có sẵn {len(existing)} file trong thư mục này.\n")
+    instances = load_instances(args.json)
+    if args.limit:
+        instances = instances[: args.limit]
 
-    total = 0
-    already_have = 0
-    downloaded = 0
-    failed_ids = []
+    log.info(f"Tổng số video cần tải: {len(instances)}")
 
-    for gloss_entry in wlasl_data:
-        gloss = gloss_entry["gloss"]
+    failed = []
+    done = 0
+    start = time.time()
 
-        for inst in gloss_entry["instances"]:
-            total += 1
-            video_id = inst["video_id"]
-            filename = f"{video_id}.mp4"
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futures = {ex.submit(download_one, inst, args.out): inst for inst in instances}
+        for fut in as_completed(futures):
+            video_id, ok, info = fut.result()
+            done += 1
+            status = "OK" if ok else "FAIL"
+            log.info(f"[{done}/{len(instances)}] {status} {video_id} ({info})")
+            if not ok:
+                failed.append((video_id, futures[fut]["url"]))
 
-            if filename in existing:
-                already_have += 1
-                continue
+    elapsed = time.time() - start
+    log.info(f"Hoàn tất trong {elapsed:.1f}s. Thành công: {len(instances) - len(failed)}, Lỗi: {len(failed)}")
 
-            out_path = os.path.join(VIDEO_DIR, filename)
-            url = inst["url"]
-
-            print(f"[{total}/?] {gloss:<20} id={video_id}  <- {url}")
-            ok = download_one(url, out_path)
-
-            if ok:
-                downloaded += 1
-                existing.add(filename)
-            else:
-                failed_ids.append(video_id)
-                print(f"    -> THẤT BẠI: {video_id}")
-
-    # Ghi các video tải lỗi vào missing.txt — flat.py sẽ tự động bỏ qua
-    # các video_id này khi build train/val/test annotation.
-    if failed_ids:
-        with open(MISSING_PATH, "a", encoding="utf-8") as f:
-            for vid in failed_ids:
-                f.write(vid + "\n")
-
-    print("\n" + "=" * 60)
-    print(f"Tổng số video trong WLASL_v0_3.json : {total}")
-    print(f"Đã có sẵn từ trước                  : {already_have}")
-    print(f"Tải mới thành công                  : {downloaded}")
-    print(f"Thất bại (đã ghi vào missing.txt)    : {len(failed_ids)}")
-    print("=" * 60)
+    if failed:
+        fail_path = os.path.join(args.out, "failed.log")
+        with open(fail_path, "w", encoding="utf-8") as f:
+            for vid, url in failed:
+                f.write(f"{vid}\t{url}\n")
+        log.info(f"Danh sách video lỗi đã ghi vào: {fail_path}")
 
 
 if __name__ == "__main__":
-    download_missing_videos()
+    sys.exit(main())

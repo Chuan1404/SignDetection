@@ -13,7 +13,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
 from src.utils import FusionComponent
-from src.models.SLT_model import SignLanguageTranslatorV1
+from src.models.SLT_model import SignLanguageTranslatorV1, SignLanguageTranslatorV2, SignLanguageTranslatorV4, \
+    SignLanguageTranslatorV5, SignLanguageTranslatorV3
 from config import ROOT
 
 
@@ -25,7 +26,6 @@ PATIENCE    = 20
 TOP_K       = 3
 VAL_RATIO   = 0
 SEED        = 42
-GCN_OUT_CHANNELS = 32
 
 
 FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_wlasl")
@@ -134,14 +134,14 @@ def main():
     num_classes = len(gloss2idx)
 
     base_train = WLASLLandmarksDataset(
-        FEATURE_DIR, ANNOTATION_DIR, fusion_component, mode="train", max_samples=None
+        FEATURE_DIR, ANNOTATION_DIR, fusion_component, mode="train"
     )
     base_val = WLASLLandmarksDataset(
-        FEATURE_DIR, ANNOTATION_DIR, fusion_component, mode="test", max_samples=None
+        FEATURE_DIR, ANNOTATION_DIR, fusion_component, mode="test"
     )
 
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    # train_dataset = base_train
     val_dataset   = base_val
 
     print(f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}")
@@ -172,7 +172,7 @@ def main():
         # num_encoder_layers=6,
         # nhead=8,
         # dim_feedforward=2048,
-        dropout=0.2,
+        # dropout=0.2,
         # max_seq_len=5000,
         num_classes=num_classes,
         # aux_loss_weight = 2
@@ -180,7 +180,7 @@ def main():
         # gcn_out_channels=GCN_OUT_CHANNELS
     )
 
-    model = SignLanguageTranslatorV1(**model_kwargs).to(DEVICE)
+    model = SignLanguageTranslatorV3(**model_kwargs).to(DEVICE)
 
     total_params     = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -197,7 +197,7 @@ def main():
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
 
-    best_top_1  = 0
+    best  = 100
     no_improve = 0
 
     for epoch in range(EPOCHS):
@@ -211,12 +211,11 @@ def main():
         print(f"Train loss      : {train_loss:.4f}")
         print(f"Val   loss      : {val_loss:.4f}")
         print(f"Val   top-1 acc : {val_top1_acc*100:.2f}%")
-        print(f"Val   top-{TOP_K} acc : {val_topk_acc*100:.2f}%")
+        # print(f"Val   top-{TOP_K} acc : {val_topk_acc*100:.2f}%")
 
-        print()
-        if best_top_1 < val_top1_acc:
-            best_top_1  = val_top1_acc
+        if best > val_loss:
             no_improve = 0
+            best  = val_loss
             torch.save({
                 "model":        model.state_dict(),
                 "optimizer":    optimizer.state_dict(),
@@ -227,10 +226,10 @@ def main():
                 "val_topk_acc": val_topk_acc,
                 "model_kwargs": model_kwargs,
             }, os.path.join(SAVE_MODEL))
-            print(f"✓ Saved best model  {val_top1_acc*100:.2f}%")
+            print(f"✓ Saved best model  {best}")
         else:
             no_improve += 1
-            print(f"  No improvement (best={best_top_1*100:.2f}%, patience={no_improve}/{PATIENCE})")
+            print(f"  No improvement (best={best}, patience={no_improve}/{PATIENCE})")
 
             if no_improve >= PATIENCE:
                 print(f"\n⚑ Early stopping at epoch {epoch+1}")

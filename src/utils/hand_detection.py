@@ -1,11 +1,12 @@
-from turtle import width
+import os.path
 
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import time
 import numpy as np
 import cv2
+
+from config import ROOT
 
 mp_hands = vision.HandLandmarkerOptions
 mp_drawing = vision.drawing_utils
@@ -33,14 +34,17 @@ FINGER_COLORS = {
     "Pinky": (255, 0, 255),  # Magenta
     "Wrist": (0, 0, 0)
 }
+
+MODEL_PATH = os.path.join(ROOT, "pretrained", "hand_landmarker.task")
+
 class HandDetection:
-    def __init__(self, min_hand_detection_confidence=0.2):
+    def __init__(self, min_hand_detection_confidence=0.3):
         self.prev_hand_crops = hand_crops = {
             "Left": None,
             "Right": None
         }
 
-        base_options = python.BaseOptions(model_asset_path='../../pretrained/hand_landmarker.task')
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 
         # Video
         video_options = vision.HandLandmarkerOptions(
