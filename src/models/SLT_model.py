@@ -11,7 +11,6 @@ from src.models.spatial_graph import (
     _STGCNBlock, build_full_body_adjacency,
     _LEFT_WRIST, _RIGHT_WRIST, _N_HAND,
     _STBiG_GCNBlock,
-    build_hands_only_adjacency,
     _CausalTemporalConv1d, _FinslerEnergyGate, sinkhorn,
 )
 
@@ -33,12 +32,12 @@ def masked_mean_pool(x, video_mask):
 class SignLanguageTranslatorV1(nn.Module):
     def __init__(
             self,
-            input_dim=90,
+            input_dim=94,
             hidden_dim=128,
             num_encoder_layers=6,
             nhead=8,
-            dim_feedforward=256,
-            dropout=0,
+            dim_feedforward=2048,
+            dropout=0.1,
             max_seq_len=5000,
             num_classes=2000
     ):
@@ -115,7 +114,7 @@ class SignLanguageTranslatorV2(nn.Module):
 
     def __init__(
             self,
-            channels=(64, 64, 128, 128),
+            channels=(64, 64, 128, 128, 256, 256),
             kernel_size=9,
             dropout=0,
             num_classes=2000,
@@ -193,15 +192,15 @@ class SignLanguageTranslatorV3(nn.Module):
 
     def __init__(
             self,
-            input_dim=90,
+            input_dim=94,
             hidden_dim=128,
-            num_encoder_layers=3,
+            num_encoder_layers=6,
             nhead=8,
-            dim_feedforward=256,
+            dim_feedforward=2048,
             dropout=0,
             max_seq_len=5000,
             num_classes=2000,
-            channels=(64, 64, 128, 128),
+            channels=(64, 64, 64, 128, 128, 256),
             kernel_size=9,
             aux_loss_weight_a=0.3,
             aux_loss_weight_b=0.3,
@@ -685,6 +684,303 @@ class SignLanguageTranslatorV5(nn.Module):
     @torch.no_grad()
     def predict(self, features, video_mask=None, top_k=1):
         logits = self.forward(features, video_mask=video_mask).logits
+        if top_k == 1:
+            return logits.argmax(dim=-1)
+        return logits.topk(k=top_k, dim=-1).indices
+
+class SignLanguageTranslatorV6(nn.Module):
+
+    def __init__(
+            self,
+            input_dim=118,
+            d_model=128,
+            num_encoder_layers=6,
+            nhead=8,
+            ffn_a = 1024,
+            ffn_b = 2048,
+            dropout=0.1,
+            max_seq_len=5000,
+            num_classes=2000,
+            aux_loss_weight_a=1,
+            aux_loss_weight_b=0,
+    ):
+        super().__init__()
+
+        self.hand_feature_start = _N_POSE * 2
+
+        self.stream_a_input_projection = nn.Sequential(
+            nn.Linear(_N_POSE * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model)
+        )
+
+        self.stream_b_input_projection = nn.Sequential(
+            nn.Linear(input_dim - (_N_POSE * 2), d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model)
+        )
+
+        self.pos_encoder = PositionalEncoding(
+            d_model=d_model,
+            max_len=max_seq_len,
+            dropout=dropout
+        )
+
+        encoder_a_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=ffn_a,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+
+        encoder_b_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=ffn_b,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.encoder_a = nn.TransformerEncoder(encoder_a_layer, num_layers=num_encoder_layers)
+        self.encoder_b = nn.TransformerEncoder(encoder_b_layer, num_layers=num_encoder_layers)
+        self.encoder_a_norm = nn.LayerNorm(d_model)
+        self.encoder_b_norm = nn.LayerNorm(d_model)
+
+        # ---------------- Fusion + classifiers ----------------
+        self.aux_loss_weight_a = aux_loss_weight_a
+        self.aux_loss_weight_b = aux_loss_weight_b
+
+        self.fusion = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(d_model)
+        )
+        self.classifier = nn.Linear(d_model, num_classes)
+
+        self.stream_a_aux_classifier = nn.Linear(d_model, num_classes)
+        self.stream_b_aux_classifier = nn.Linear(d_model, num_classes)
+
+    def encode_stream_a(self, pose_features, video_mask):
+        x = self.stream_a_input_projection(pose_features)
+        x = self.pos_encoder(x)
+        x = self.encoder_a(x, src_key_padding_mask=~video_mask)
+        x = self.encoder_a_norm(x)  # (B, T, d_model)
+        return x
+
+    def encode_stream_b(self, hand_features, video_mask):
+
+        x = self.stream_b_input_projection(hand_features)
+        x = self.pos_encoder(x)
+        x = self.encoder_b(x, src_key_padding_mask=~video_mask)
+        x = self.encoder_b_norm(x)
+        return x
+
+    def forward(self, features, labels=None, video_mask=None):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+        video_mask = video_mask.bool()
+
+        pose_features = features[:, :, :self.hand_feature_start]
+        hand_features = features[:, :, self.hand_feature_start:]
+
+        seq_a = self.encode_stream_a(pose_features, video_mask)
+        seq_b = self.encode_stream_b(hand_features, video_mask)
+
+        pooled_a = masked_mean_pool(seq_a, video_mask)
+        pooled_b = masked_mean_pool(seq_b, video_mask)
+
+        fused = self.fusion(torch.cat([pooled_a, pooled_b], dim=-1))
+        logits = self.classifier(fused)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+            if self.aux_loss_weight_a > 0:
+                aux_logits_a = self.stream_a_aux_classifier(pooled_a)
+                loss = loss + self.aux_loss_weight_a * F.cross_entropy(aux_logits_a, labels)
+
+            if self.aux_loss_weight_b > 0:
+                aux_logits_b = self.stream_b_aux_classifier(pooled_b)
+                loss = loss + self.aux_loss_weight_b * F.cross_entropy(aux_logits_b, labels)
+
+        return ClassificationOutput(loss=loss, logits=logits)
+
+    @torch.no_grad()
+    def predict(self, features, video_mask=None, top_k=1):
+        logits = self.forward(
+            features, video_mask=video_mask
+        ).logits
+        if top_k == 1:
+            return logits.argmax(dim=-1)
+        return logits.topk(k=top_k, dim=-1).indices
+
+class SignLanguageTranslatorV7(nn.Module):
+
+    def __init__(
+            self,
+            input_dim=118,
+            hidden_dim=128,
+            num_encoder_layers=6,
+            nhead=8,
+            dim_feedforward=1024,
+            dropout=0.1,
+            max_seq_len=5000,
+            num_classes=2000,
+    ):
+        super().__init__()
+
+        d_model = hidden_dim
+
+        self.hand_feature_start = _N_POSE * 2
+
+        self.stream_a_input_projection = nn.Sequential(
+            nn.Linear(_N_POSE * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(d_model)
+        )
+
+        self.pos_encoder = PositionalEncoding(
+            d_model=d_model,
+            max_len=max_seq_len,
+            dropout=dropout
+        )
+
+        encoder_a_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.encoder_a = nn.TransformerEncoder(encoder_a_layer, num_layers=num_encoder_layers)
+        self.encoder_a_norm = nn.LayerNorm(d_model)
+
+        self.classifier = nn.Linear(d_model, num_classes)
+
+        self.stream_a_aux_classifier = nn.Linear(d_model, num_classes)
+
+    def encode_stream_a(self, pose_features, video_mask):
+        x = self.stream_a_input_projection(pose_features)
+        x = self.pos_encoder(x)
+        x = self.encoder_a(x, src_key_padding_mask=~video_mask)
+        x = self.encoder_a_norm(x)  # (B, T, d_model)
+        return x
+
+    def forward(self, features, labels=None, video_mask=None):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+        video_mask = video_mask.bool()
+
+        pose_features = features[:, :, :self.hand_feature_start]
+
+        seq_a = self.encode_stream_a(pose_features, video_mask)
+
+        pooled_a = masked_mean_pool(seq_a, video_mask)
+
+        logits = self.classifier(pooled_a)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return ClassificationOutput(loss=loss, logits=logits)
+
+    @torch.no_grad()
+    def predict(self, features, video_mask=None, top_k=1):
+        logits = self.forward(
+            features, video_mask=video_mask
+        ).logits
+        if top_k == 1:
+            return logits.argmax(dim=-1)
+        return logits.topk(k=top_k, dim=-1).indices
+
+class SignLanguageTranslatorV8(nn.Module):
+
+    def __init__(
+            self,
+            input_dim=84,
+            hidden_dim=256,
+            num_encoder_layers=6,
+            nhead=16,
+            dim_feedforward=1024,
+            dropout=0.1,
+            max_seq_len=5000,
+            num_classes=2000,
+    ):
+        super().__init__()
+
+        d_model = hidden_dim
+
+        self.stream_b_input_projection = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(d_model)
+        )
+
+        self.pos_encoder = PositionalEncoding(
+            d_model=d_model,
+            max_len=max_seq_len,
+            dropout=dropout
+        )
+
+        encoder_b_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.encoder_b = nn.TransformerEncoder(encoder_b_layer, num_layers=num_encoder_layers)
+        self.encoder_b_norm = nn.LayerNorm(d_model)
+
+        self.classifier = nn.Linear(d_model, num_classes)
+
+        self.stream_b_aux_classifier = nn.Linear(d_model, num_classes)
+
+    def encode_stream_b(self, hand_features, video_mask):
+        x = self.stream_b_input_projection(hand_features)
+        x = self.pos_encoder(x)
+        x = self.encoder_b(x, src_key_padding_mask=~video_mask)
+        x = self.encoder_b_norm(x)  # (B, T, d_model)
+        return x
+
+    def forward(self, features, labels=None, video_mask=None):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+        video_mask = video_mask.bool()
+
+        seq_b = self.encode_stream_b(features, video_mask)
+
+        pooled_b = masked_mean_pool(seq_b, video_mask)
+
+        logits = self.classifier(pooled_b)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return ClassificationOutput(loss=loss, logits=logits)
+
+    @torch.no_grad()
+    def predict(self, features, video_mask=None, top_k=1):
+        logits = self.forward(
+            features, video_mask=video_mask
+        ).logits
         if top_k == 1:
             return logits.argmax(dim=-1)
         return logits.topk(k=top_k, dim=-1).indices

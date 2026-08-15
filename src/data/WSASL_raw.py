@@ -4,6 +4,8 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from src.utils.kalman_filter import smooth_for_fusion, restore_missing_points
+
 
 class WLASLLandmarksDataset(Dataset):
 
@@ -65,36 +67,45 @@ class WLASLLandmarksDataset(Dataset):
             gloss = f.read().strip()
         label_id = self.gloss2idx[gloss]
 
-        left_present = ~np.all(left_features == 0, axis=-1)  # (T,)
-        right_present = ~np.all(right_features == 0, axis=-1)  # (T,)
-        any_present = left_present | right_present
+        T = left_features.shape[0]
 
-        start_frame = int(np.argmax(any_present)) if any_present.any() else 0
+        left_present_mask = np.any(left_features.reshape(T, 21, 3) != 0, axis=(1, 2))  # (T,)
+        right_present_mask = np.any(right_features.reshape(T, 21, 3) != 0, axis=(1, 2))  # (T,)
 
-        left_features = left_features[start_frame:]
-        right_features = right_features[start_frame:]
-        pose_features = pose_features[start_frame:]
+        any_present = left_present_mask | right_present_mask
 
-        left_features = torch.tensor(left_features).float()
-        right_features = torch.tensor(right_features).float()
+        if any_present.any():
 
-        hand_features = torch.concatenate([left_features, right_features], dim=-1)
-        pose_features = torch.tensor(pose_features).float()
+            start_frame = int(np.argmax(any_present))
 
-        # hand_normalize_features = self.normalize_features(hand_features)
-        features = self.fusion_component.fuse(pose_features, hand_features)
-        T = features.shape[0]
-        features = features.reshape(T, -1)
+            end_frame = int(np.where(any_present)[0][-1]) + 1
 
-        return features, label_id
+        else:
+
+            start_frame = 0
+            end_frame = T
+
+        left_features = left_features[start_frame:end_frame]
+        right_features = right_features[start_frame:end_frame]
+        pose_features = pose_features[start_frame:end_frame]
+
+
+        pose_smooth, left_smooth, right_smooth = restore_missing_points(pose_features, left_features, right_features)
+
+        hand_features = np.concatenate([left_features, right_features], axis=-1)
+        hand_normalize_features = self.normalize_features(torch.tensor(hand_features))
+
+        # features = self.fusion_component.fuse(pose_features, left_features, right_features)
+        return hand_normalize_features, label_id
 
     def normalize_features(self, hand_features):
         T = hand_features.shape[0]
 
         x = hand_features.reshape(T, 2, 21, 3).clone()
+        x = x[..., :2]
 
         # index 0 is left hand, index 1 is right hand
-        left_wrist = x[:, 0, 0:1, :]  # (T,1,3)
+        left_wrist = x[:, 0, 0:1, :]  # (T,1,2)
         right_wrist = x[:, 1, 0:1, :]
         
         x[:, 0] = x[:, 0] - left_wrist

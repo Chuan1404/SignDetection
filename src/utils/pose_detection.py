@@ -49,10 +49,13 @@ class PoseDetection:
         pose_connection_style = mp_drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=1)
 
         for pose_landmarks in pose_landmarks_list:
+            num_landmarks = len(pose_landmarks.landmark) if hasattr(pose_landmarks, 'landmark') else len(pose_landmarks)
+            conns = vision.PoseLandmarksConnections.POSE_LANDMARKS if num_landmarks >= 33 else None
+
             mp_drawing_utils.draw_landmarks(
                 image=annotated_image,
                 landmark_list=pose_landmarks,
-                connections=vision.PoseLandmarksConnections.POSE_LANDMARKS,
+                connections=conns,
                 landmark_drawing_spec=landmark_style,
                 connection_drawing_spec=connection_style,)
 

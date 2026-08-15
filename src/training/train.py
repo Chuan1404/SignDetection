@@ -1,307 +1,95 @@
-import os
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-import torch
-
-import gc
+from sympy.printing.pytorch import torch
+from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 
-from transformers import AutoTokenizer
-
-from torch.utils.data import DataLoader, random_split
-from torch.nn.utils.rnn import pad_sequence
-
-from config import ROOT
-
-
-
-# =====================================================
-# CONFIG
-# =====================================================
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-FEATURE_DIR = os.path.join(
-    ROOT,
-    "datasets",
-    "processed",
-    "mediapipe"
-)
-
-SAVE_DIR = os.path.join(
-    ROOT,
-    "models"
-)
-
-os.makedirs(SAVE_DIR, exist_ok=True)
-
-BATCH_SIZE = 8
-EPOCHS = 50
-LR = 1e-4
-
-
-# =====================================================
-# TOKENIZER
-# =====================================================
-
-tokenizer = AutoTokenizer.from_pretrained(
-    "google/mt5-small",
-    use_fast=False
-)
-
-
-# =====================================================
-# COLLATE
-# =====================================================
 
 def collate_fn(batch):
+    features, labels = [], []
+    for feature, label in batch:
+        features.append(torch.as_tensor(feature, dtype=torch.float32))
+        labels.append(label)
 
-    features = []
-    texts = []
+    real_lengths = [f.shape[0] for f in features]
 
-    for feature, text in batch:
+    features = pad_sequence(features, batch_first=True)
 
-        features.append(feature)
-        texts.append(text)
+    video_mask = (
+        torch.arange(features.shape[1]).unsqueeze(0)
+        < torch.tensor(real_lengths).unsqueeze(1)
+    ).long()
 
-    features = pad_sequence(
-        features,
-        batch_first=True
-    )
+    labels = torch.tensor(labels, dtype=torch.long)
 
-    texts = pad_sequence(
-        texts,
-        batch_first=True,
-        padding_value=tokenizer.pad_token_id
-    )
+    return features, labels, video_mask
 
-    labels = texts.clone()
+def train_one_epoch(model, loader, optimizer, device='cuda'):
 
-    labels[
-        labels == tokenizer.pad_token_id
-    ] = -100
+    model.train()
+    total_loss = 0
 
-    return features, labels
+    pbar = tqdm(loader, desc="Training")
 
+    for features, labels, video_mask in pbar:
 
-# =====================================================
-# DATASET
-# =====================================================
+        features   = features.to(device, non_blocking=True)
+        labels     = labels.to(device, non_blocking=True)
+        video_mask = video_mask.to(device, non_blocking=True)
 
-dataset = HandLandmarksDataset(
-    FEATURE_DIR,
-    tokenizer
-)
-
-total_size = len(dataset)
-
-train_size = int(total_size * 0.8)
-val_size = int(total_size * 0.1)
-test_size = total_size - train_size - val_size
-
-train_dataset, val_dataset, test_dataset = random_split(
-    dataset,
-    [train_size, val_size, test_size]
-)
-
-print("TRAIN:", len(train_dataset))
-print("VAL:", len(val_dataset))
-print("TEST:", len(test_dataset))
-
-
-# =====================================================
-# DATALOADER
-# =====================================================
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    collate_fn=collate_fn,
-    pin_memory=True,
-    num_workers=0
-)
-
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    collate_fn=collate_fn,
-    pin_memory=True,
-    num_workers=0
-)
-
-test_loader = DataLoader(
-    test_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    collate_fn=collate_fn,
-    pin_memory=True,
-    num_workers=0
-)
-
-
-# =====================================================
-# MODEL
-# =====================================================
-
-model = SignLanguageTranslator(
-    input_dim=126
-).to(DEVICE)
-
-optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=LR
-)
-
-scaler = torch.cuda.amp.GradScaler()
-
-
-# =====================================================
-# LOSS
-# =====================================================
-
-def compute_loss(
-    hand_features,
-    labels
-):
-
-    hand_features = hand_features.to(
-        DEVICE,
-        non_blocking=True
-    )
-
-    labels = labels.to(
-        DEVICE,
-        non_blocking=True
-    )
-
-    with torch.cuda.amp.autocast():
+        optimizer.zero_grad(set_to_none=True)
 
         outputs = model(
-            hand_features,
-            labels=labels
+            features,
+            labels=labels,
+            video_mask=video_mask
         )
 
         loss = outputs.loss
+        loss.backward()
 
-    return loss
-
-
-# =====================================================
-# TRAIN
-# =====================================================
-
-def train_one_epoch():
-
-    model.train()
-
-    total_loss = 0
-
-    pbar = tqdm(
-        train_loader,
-        desc="Training"
-    )
-
-    for hand_features, labels in pbar:
-
-        optimizer.zero_grad(
-            set_to_none=True
-        )
-
-        loss = compute_loss(
-            hand_features,
-            labels
-        )
-
-        scaler.scale(loss).backward()
-
-        scaler.unscale_(optimizer)
-
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            1.0
-        )
-
-        scaler.step(optimizer)
-        scaler.update()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
 
         total_loss += loss.item()
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
 
-        pbar.set_postfix(
-            loss=f"{loss.item():.4f}"
-        )
+    return total_loss / len(loader)
 
-    return total_loss / len(train_loader)
-
-
-# =====================================================
-# VALIDATE
-# =====================================================
-
-def validate():
+def validate(model, loader, top_k=5, device='cuda'):
 
     model.eval()
-
     total_loss = 0
 
+    total_correct_top1 = 0
+    total_correct_topk = 0
+    total_samples = 0
+
     with torch.no_grad():
+        for features, labels, video_mask in loader:
+            features   = features.to(device, non_blocking=True)
+            labels     = labels.to(device, non_blocking=True)
+            video_mask = video_mask.to(device, non_blocking=True)
 
-        for hand_features, labels in val_loader:
-
-            loss = compute_loss(
-                hand_features,
-                labels
+            outputs = model(
+                features,
+                labels=labels,
+                video_mask=video_mask
             )
+            total_loss += outputs.loss.item()
 
-            total_loss += loss.item()
+            logits = outputs.logits                                # (B, num_classes)
 
-    return total_loss / len(val_loader)
+            preds_top1 = logits.argmax(dim=-1)                     # (B,)
+            total_correct_top1 += (preds_top1 == labels).sum().item()
 
+            k = min(top_k, logits.size(-1))
+            preds_topk = logits.topk(k=k, dim=-1).indices          # (B, k)
+            in_topk = (preds_topk == labels.unsqueeze(-1)).any(dim=-1)
+            total_correct_topk += in_topk.sum().item()
 
+            total_samples += labels.size(0)
 
-# =====================================================
-# TRAIN LOOP
-# =====================================================
+    avg_loss = total_loss / len(loader)
+    top1_acc = total_correct_top1 / total_samples if total_samples > 0 else 0.0
+    topk_acc = total_correct_topk / total_samples if total_samples > 0 else 0.0
 
-best_loss = float("inf")
-
-for epoch in range(EPOCHS):
-
-    print(f"\nEpoch {epoch+1}/{EPOCHS}")
-
-    train_loss = train_one_epoch()
-
-    val_loss = validate()
-
-    print(f"Train Loss: {train_loss:.4f}")
-    print(f"Val Loss: {val_loss:.4f}")
-
-    if val_loss < best_loss:
-
-        best_loss = val_loss
-
-        save_path = os.path.join(
-            SAVE_DIR,
-            "best_model.pt"
-        )
-
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict":
-                    model.state_dict(),
-                "optimizer_state_dict":
-                    optimizer.state_dict(),
-                "val_loss":
-                    val_loss
-            },
-            save_path
-        )
-
-        print("Best model saved!")
-
-    torch.cuda.empty_cache()
-    gc.collect()
+    return avg_loss, top1_acc, topk_acc

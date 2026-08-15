@@ -133,7 +133,6 @@ class HandDetection:
             ]
 
 
-            # Draw connections per finger with assigned colors
             for finger_name, indices in FINGERS.items():
                 color = FINGER_COLORS[finger_name]
 
@@ -150,7 +149,6 @@ class HandDetection:
 
                     start_idx = indices[i]
 
-            # Draw all landmarks as small circles
             for finger_name, indices in FINGERS.items():
                 color = FINGER_COLORS[finger_name]
 

@@ -11,7 +11,7 @@ from src.utils.hand_detection import HandDetection
 from src.utils.face_detection import FaceDetection
 from config import ROOT, WLASL_RAW_DATA
 
-SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
+SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 LABELS_PATH = os.path.join(ROOT, "datasets", "annotations", "wlasl_flat.json")
@@ -23,7 +23,7 @@ print(f"Total instances: {len(label_entries)}")
 
 for entry in tqdm(label_entries, total=len(label_entries)):
 
-    hand_detection = HandDetection()
+    hand_detection = HandDetection(min_hand_detection_confidence=0.7)
     pose_detection = PoseDetection()
     face_detection = FaceDetection()
 

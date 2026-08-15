@@ -4,7 +4,7 @@ import json
 from config import ROOT
 
 NSLT_JSON_PATH = os.path.join(
-    ROOT, "datasets", "raw", "WLASL", "nslt_2000.json"
+    ROOT, "datasets", "raw", "WLASL", "nslt_300.json"
 )
 
 WLASL_FULL_JSON_PATH = os.path.join(
@@ -16,7 +16,7 @@ MISSING_PATH = os.path.join(
 )
 
 SAVE_DIR = os.path.join(
-    ROOT, "datasets", "annotations", "WLASL2000"
+    ROOT, "datasets", "annotations", "WLASL300"
 )
 
 os.makedirs(SAVE_DIR, exist_ok=True)
